@@ -1,6 +1,3 @@
-/***
- * @module Globals
- */
 #include "AppHdr.h"
 
 #include "l-libs.h"
@@ -8,6 +5,9 @@
 #include "clua.h"
 #include "libutil.h" // map_find
 #include "options.h"
+
+//////////////////////////////////////////////////////////////////////
+// Miscellaneous globals
 
 #define PATTERN_FLUSH_CEILING 100
 
@@ -39,12 +39,6 @@ static base_pattern &get_text_pattern(const string &s, bool checkcase)
     return *pattern_cache[s];
 }
 
-/*** Match a string with a pattern.
- * @tparam string pat the pattern
- * @tparam string s
- * @treturn boolean
- * @function pmatch
- */
 static int lua_pmatch(lua_State *ls)
 {
     const char *pattern = luaL_checkstring(ls, 1);
@@ -69,6 +63,3 @@ void cluaopen_globals(lua_State *ls)
     lua_pushcfunction(ls, lua_pmatch);
     lua_setglobal(ls, "pmatch");
 }
-/***
- * @section end
- */

@@ -1,8 +1,8 @@
-/*** View the world.
- * All functions in this module that take coordinates use a player centered
- * coordinate system.
- * @module view
- */
+/**
+ * @file
+ * @brief User interaction with env.show.
+**/
+
 #include "AppHdr.h"
 
 #include "l-libs.h"
@@ -24,12 +24,6 @@
     const coord_def p = player2grid(coord_def(luaL_checkint(ls,p1), \
                                               luaL_checkint(ls,p2)));
 
-/*** What is the feature here?
- * @tparam int x
- * @tparam int y
- * @treturn string feature name
- * @function feature_at
- */
 LUAFN(view_feature_at)
 {
     PLAYERCOORDS(p, 1, 2)
@@ -43,12 +37,6 @@ LUAFN(view_feature_at)
     return 1;
 }
 
-/*** What kind of cloud (if any) is here?
- * @tparam int x
- * @tparam int y
- * @treturn string|nil cloud name or nil
- * @function cloud_at
- */
 LUAFN(view_cloud_at)
 {
     PLAYERCOORDS(p, 1, 2)
@@ -67,12 +55,6 @@ LUAFN(view_cloud_at)
     return 1;
 }
 
-/*** Is it safe here?
- * @tparam int x
- * @tparam int y
- * @treturn boolean
- * @function is_safe_square
- */
 LUAFN(view_is_safe_square)
 {
     PLAYERCOORDS(p, 1, 2)
@@ -108,12 +90,6 @@ LUAFN(view_is_safe_square)
     return 1;
 }
 
-/*** Can we get to this square?
- * @tparam int x
- * @tparam int y
- * @treturn boolean
- * @function can_reach
- */
 LUAFN(view_can_reach)
 {
     COORDSHOW(s, 1, 2)
@@ -141,12 +117,6 @@ LUAFN(view_can_reach)
     return 1;
 }
 
-/*** Is this square excluded from movement by mesmerise-like effects?
- * @tparam int x
- * @tparam int y
- * @treturn boolean
- * @function withheld
- */
 LUAFN(view_withheld)
 {
     PLAYERCOORDS(p, 1, 2)
@@ -159,12 +129,6 @@ LUAFN(view_withheld)
     return 1;
 }
 
-/*** Did we detect an invisible monster on this square?
- * @tparam int x
- * @tparam int y
- * @treturn boolean
- * @function invisible_monster
- */
 LUAFN(view_invisible_monster)
 {
     PLAYERCOORDS(p, 1, 2)
@@ -177,14 +141,6 @@ LUAFN(view_invisible_monster)
     return 1;
 }
 
-/*** Can one cell see the other?
- * @tparam int x1
- * @tparam int y1
- * @tparam int x2
- * @tparam int y2
- * @treturn boolean
- * @function cell_see_cell
- */
 LUAFN(view_cell_see_cell)
 {
     PLAYERCOORDS(p1, 1, 2)

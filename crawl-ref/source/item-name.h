@@ -5,12 +5,13 @@
 
 #pragma once
 
-#include "item-prop-enum.h"
 #include "mon-flags.h"
 #include "random.h"
 
 #define CORPSE_NAME_KEY      "corpse_name_key"
 #define CORPSE_NAME_TYPE_KEY "corpse_name_type_key"
+
+#define PAKELLAS_SUPERCHARGE_KEY "pakellas_supercharged"
 
 struct item_kind
 {
@@ -125,9 +126,8 @@ string make_name(uint32_t seed = get_uint32(),
                  makename_type name_type = MNAME_DEFAULT);
 void make_name_tests();
 
-const char* brand_type_name(brand_type brand, bool terse) PURE;
-const char* brand_type_adj(brand_type brand) PURE;
-const char* weapon_brand_name(const item_def& item, bool terse, brand_type override_brand = SPWPN_NORMAL) PURE;
+const char* brand_type_name(int brand, bool terse) PURE;
+const char* weapon_brand_name(const item_def& item, bool terse, int override_brand = 0) PURE;
 const char* armour_ego_name(const item_def& item, bool terse);
 const char* missile_brand_name(const item_def& item, mbn_type t);
 
@@ -158,8 +158,8 @@ const char *base_type_string(const item_def &item);
 
 string sub_type_string(const item_def &item, bool known = true);
 
-string ego_type_string(const item_def &item, bool terse = false, brand_type override_brand = SPWPN_NORMAL);
-string ghost_brand_name(brand_type brand, monster_type mtype);
+string ego_type_string(const item_def &item, bool terse = false, int override_brand = 0);
+string ghost_brand_name(int brand);
 
 const char* potion_type_name(int potiontype);  //used in xom.cc
 const char* jewellery_effect_name(int jeweltype, bool terse = false) PURE; //used in l-item.cc

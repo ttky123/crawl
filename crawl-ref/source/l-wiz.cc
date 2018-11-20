@@ -1,3 +1,8 @@
+/**
+ * @file
+ * @brief Wizmode-specific bindings
+**/
+
 /*
 --- General game bindings
 
@@ -15,7 +20,11 @@ module "crawl"
 
 #ifdef WIZARD
 
+/////////////////////////////////////////////////////////////////////
+// User accessible
 //
+
+/////////////////////////////////////////////////////////////////////
 // Non-user-accessible bindings (dlua).
 //
 
@@ -27,7 +36,7 @@ LUAFN(wiz_quick_fsim)
     monster_type mtype = get_monster_by_name(mon_name, true);
     if (mtype == MONS_PROGRAM_BUG)
     {
-        string err = make_stringf("No such monster: '%s'.", mon_name.c_str());
+        string err = make_stringf("<1080>No such monster: '%s'.", mon_name.c_str());
         return luaL_argerror(ls, 1, err.c_str());
     }
     const int fsim_rounds = luaL_checkint(ls, 2);
@@ -36,7 +45,7 @@ LUAFN(wiz_quick_fsim)
     Options.fsim_rounds = fsim_rounds;
 
     fight_data fdata = wizard_quick_fsim_raw(false);
-    PLUARET(number, fdata.player.av_eff_dam);
+    PLUARET(number, fdata.av_eff_dam);
 }
 
 static const struct luaL_reg wiz_dlib[] =

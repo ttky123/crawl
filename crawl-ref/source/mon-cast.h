@@ -14,6 +14,12 @@ struct dice_def;
 void init_mons_spells();
 bool is_valid_mon_spell(spell_type spell);
 
+bool has_push_space(const coord_def& pos, actor* act,
+                    const vector<coord_def>* excluded = nullptr);
+bool get_push_space(const coord_def& pos, coord_def& newpos,
+                    actor* act, bool ignore_tension = false,
+                    const vector<coord_def>* excluded = nullptr);
+
 void aura_of_brilliance(monster* agent);
 
 bool mons_should_cloud_cone(monster* agent, int power, const coord_def pos);
@@ -28,8 +34,7 @@ bool handle_mon_spell(monster* mons);
 
 static const int ENCH_POW_FACTOR = 3;
 int mons_power_for_hd(spell_type spell, int hd, bool random = true);
-int mons_spellpower(const monster &mons, spell_type spell);
-int mons_spell_range_for_hd(spell_type spell, int hd);
+int mons_spell_range(spell_type spell, int hd);
 bolt mons_spell_beam(const monster* mons, spell_type spell_cast, int power,
                      bool check_validity = false);
 void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,

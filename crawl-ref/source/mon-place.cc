@@ -32,7 +32,6 @@
 #include "libutil.h"
 #include "losglobal.h"
 #include "message.h"
-#include "mon-act.h"
 #include "mon-behv.h"
 #include "mon-death.h"
 #include "mon-gear.h"
@@ -74,6 +73,11 @@ static vector<bool> vault_mon_bands;
 #define VAULT_MON_WEIGHTS_KEY "vault_mon_weights"
 #define VAULT_MON_BANDS_KEY   "vault_mon_bands"
 #endif
+
+// proximity is the same as for mons_place:
+// 0 is no restrictions
+// 1 attempts to place near player
+// 2 attempts to avoid player LOS
 
 #define BIG_BAND        20
 
@@ -225,6 +229,37 @@ bool monster_can_submerge(const monster* mon, dungeon_feature_type feat)
         return false;
 }
 
+static bool _is_spawn_scaled_area(const level_id &here)
+{
+    return is_connected_branch(here.branch)
+           && !is_hell_subbranch(here.branch)
+           && here.branch != BRANCH_VESTIBULE
+           && here.branch != BRANCH_ZOT;
+}
+
+// Scale monster generation parameter with time spent on level. Note:
+// (target_value - base_value) * dropoff_ramp_turns must be < INT_MAX!
+static int _scale_spawn_parameter(int base_value,
+                                  int target_value,
+                                  int final_value,
+                                  int dropoff_start_turns = 3000,
+                                  int dropoff_ramp_turns  = 12000)
+{
+    if (!_is_spawn_scaled_area(level_id::current()))
+        return base_value;
+
+    const int turns_on_level = env.turns_on_level;
+    return turns_on_level <= dropoff_start_turns ? base_value :
+           turns_on_level > dropoff_start_turns + dropoff_ramp_turns ?
+           final_value :
+
+           // Actual scaling, strictly linear at the moment:
+           (base_value +
+            (target_value - base_value)
+            * (turns_on_level - dropoff_start_turns)
+            / dropoff_ramp_turns);
+}
+
 static void _apply_ood(level_id &place)
 {
     // OODs do not apply to any portal vaults, any 1-level branches, Zot and
@@ -237,21 +272,25 @@ static void _apply_ood(level_id &place)
         return;
     }
 
-#ifdef DEBUG_DIAGNOSTICS
-    level_id old_place = place;
-#endif
+    // The OOD fuzz roll is not applied at level generation time on
+    // D:1, and is applied slightly less often (0.75*0.14) on D:2. All
+    // other levels have a straight 14% chance of moderate OOD fuzz
+    // for each monster at level generation, and the chances of
+    // moderate OODs go up to 100% after a ramp-up period.
 
-    // The OOD fuzz roll is not applied on D:1, and is applied slightly less
-    // often (0.75*0.14) on D:2. All other levels have a straight 14% chance of
-    // moderate OOD fuzz for each monster at level generation.
     if (place.branch == BRANCH_DUNGEON
-        && (place.depth == 1
-            || place.depth == 2 && one_chance_in(4)))
+        && (place.depth == 1 && env.turns_on_level < 701
+         || place.depth == 2 && (env.turns_on_level < 584 || one_chance_in(4))))
     {
         return;
     }
 
-    if (x_chance_in_y(14, 100))
+#ifdef DEBUG_DIAGNOSTICS
+    level_id old_place = place;
+#endif
+
+    if (x_chance_in_y(_scale_spawn_parameter(140, 1000, 1000, 3000, 4800),
+                      1000))
     {
         const int fuzzspan = 5;
         const int fuzz = max(0, random_range(-fuzzspan, fuzzspan, 2));
@@ -260,10 +299,36 @@ static void _apply_ood(level_id &place)
         if (fuzz)
         {
             place.depth += fuzz;
-            dprf(DIAG_MONPLACE, "Monster level fuzz: %d (old: %s, new: %s)",
+            dprf(DIAG_MONPLACE, "<1549>Monster level fuzz: %d (old: %s, new: %s)",
                  fuzz, old_place.describe().c_str(), place.describe().c_str());
         }
     }
+
+    // On D:13 and deeper, and for those who tarry, something extreme:
+    if (env.turns_on_level > 1400 - place.absdepth() * 117
+        && x_chance_in_y(_scale_spawn_parameter(2, 10000, 10000, 3000, 9000),
+                         10000))
+    {
+        // this maxes depth most of the time
+        place.depth += random2avg(27, 2);
+        dprf(DIAG_MONPLACE, "<1550>Super OOD roll: Old: %s, New: %s",
+             old_place.describe().c_str(), place.describe().c_str());
+    }
+}
+
+static int _vestibule_spawn_rate()
+{
+    // Monster generation in the Vestibule drops off quickly.
+    const int taper_off_turn = 500;
+    int genodds = 240;
+    // genodds increases once you've spent more than 500 turns in Hell.
+    if (env.turns_on_level > taper_off_turn)
+    {
+        genodds += (env.turns_on_level - taper_off_turn);
+        genodds  = (genodds < 0 ? 20000 : min(genodds, 20000));
+    }
+
+    return genodds;
 }
 
 //#define DEBUG_MON_CREATION
@@ -283,9 +348,7 @@ void spawn_random_monsters()
     if (crawl_state.game_is_arena()
         || (crawl_state.game_is_sprint()
             && player_in_connected_branch()
-            && you.chapter == CHAPTER_ORB_HUNTING)
-        // Spawns no longer occur outside the Orb run in connected branches.
-        || !player_on_orb_run() && player_in_connected_branch())
+            && you.chapter == CHAPTER_ORB_HUNTING))
     {
         return;
     }
@@ -302,8 +365,20 @@ void spawn_random_monsters()
         return;
     }
 
+    if (player_in_branch(BRANCH_VESTIBULE))
+        rate = _vestibule_spawn_rate();
+
     if (player_on_orb_run())
-        rate = have_passive(passive_t::slow_orb_run) ? 36 : 18;
+        rate = have_passive(passive_t::slow_orb_run) ? 16 : 8;
+    else if (!player_in_starting_abyss())
+        rate = _scale_spawn_parameter(rate, 6 * rate, 0);
+
+    if (rate == 0)
+    {
+        dprf(DIAG_MONPLACE, "random monster gen scaled off, %d turns on level",
+             env.turns_on_level);
+        return;
+    }
 
     if (player_in_branch(BRANCH_ABYSS))
     {
@@ -316,18 +391,24 @@ void spawn_random_monsters()
     if (!x_chance_in_y(5, rate))
         return;
 
-    // Orb spawns. Don't generate orb spawns in Abyss to show some mercy to
-    // players that get banished there on the orb run.
-    if (player_on_orb_run() && !player_in_branch(BRANCH_ABYSS))
+    // Place normal dungeon monsters, but not in player LOS. Don't generate orb
+    // spawns in Abyss to show some mercy to players that get banished there on
+    // the orb run.
+    if (player_in_connected_branch()
+        || (player_on_orb_run() && !player_in_branch(BRANCH_ABYSS)))
     {
         dprf(DIAG_MONPLACE, "Placing monster, rate: %d, turns here: %d",
              rate, env.turns_on_level);
+        proximity_type prox = (one_chance_in(10) ? PROX_NEAR_STAIRS
+                                                 : PROX_AWAY_FROM_PLAYER);
+
+        // The rules change once the player has picked up the Orb...
+        if (player_on_orb_run())
+            prox = (one_chance_in(3) ? PROX_CLOSE_TO_PLAYER : PROX_ANYWHERE);
 
         mgen_data mg(WANDERING_MONSTER);
-        mg.proximity = PROX_CLOSE_TO_PLAYER;
-        mg.foe = MHITYOU;
-        // Don't count orb run spawns in the xp_by_level dump
-        mg.xp_tracking = XP_UNTRACKED;
+        mg.proximity = prox;
+        mg.foe = (player_on_orb_run()) ? MHITYOU : MHITNOT;
         mons_place(mg);
         viewwindow();
         return;
@@ -394,15 +475,14 @@ monster_type pick_random_monster(level_id place,
 
     if (crawl_state.game_is_arena())
         return pick_monster(place, arena_veto_random_monster);
-
-    ASSERT(_is_random_monster(kind) || kind == MONS_NO_MONSTER);
-
-    if (kind == RANDOM_MOBILE_MONSTER)
+    else if (kind == RANDOM_MOBILE_MONSTER)
         return pick_monster(place, mons_class_is_stationary);
     else if (kind == RANDOM_COMPATIBLE_MONSTER)
         return pick_monster(place, _is_incompatible_monster);
     else if (kind == RANDOM_BANDLESS_MONSTER)
         return pick_monster(place, _is_banded_monster);
+    else if (mons_class_is_zombified(kind))
+        return pick_local_zombifiable_monster(place, kind, coord_def());
     else if (crawl_state.game_is_sprint())
         return pick_monster(place, _has_big_aura);
     else
@@ -412,10 +492,6 @@ monster_type pick_random_monster(level_id place,
 bool can_place_on_trap(monster_type mon_type, trap_type trap)
 {
     if (mons_is_tentacle_segment(mon_type))
-        return true;
-
-    // Things summoned by the player to a specific spot shouldn't protest.
-    if (mon_type == MONS_FULMINANT_PRISM || mon_type == MONS_LIGHTNING_SPIRE)
         return true;
 
     if (trap == TRAP_TELEPORT || trap == TRAP_TELEPORT_PERMANENT
@@ -430,6 +506,53 @@ bool can_place_on_trap(monster_type mon_type, trap_type trap)
 bool drac_colour_incompatible(int drac, int colour)
 {
     return drac == MONS_DRACONIAN_SCORCHER && colour == MONS_WHITE_DRACONIAN;
+}
+
+// Finds a random square as close to a staircase as possible
+static bool _find_mon_place_near_stairs(coord_def& pos,
+                                        dungeon_char_type *stair_type,
+                                        level_id &place)
+{
+    pos = get_random_stair();
+    const dungeon_feature_type feat = grd(pos);
+    *stair_type = get_feature_dchar(feat);
+
+    // First, assume a regular stair.
+    switch (feat_stair_direction(feat))
+    {
+    case CMD_GO_UPSTAIRS:
+        if (place.depth > 1)
+            place.depth--;
+        break;
+    case CMD_GO_DOWNSTAIRS:
+        if (place.depth < brdepth[place.branch])
+            place.depth++;
+        break;
+    default: ;
+    }
+
+    // Is it a branch stair?
+    for (branch_iterator it; it; ++it)
+    {
+        if (it->entry_stairs == feat)
+        {
+            place = it->id;
+            break;
+        }
+        else if (it->exit_stairs == feat)
+        {
+            place = brentry[it->id];
+            // This can happen on D:1 and in wizmode with random spawns on the
+            // first floor of a branch that didn't generate naturally.
+            if (!place.is_valid())
+                return false;
+            break;
+        }
+    }
+    const monster_type habitat_target = MONS_BAT;
+    int distance = 3;
+    pos = find_newmons_square_contiguous(habitat_target, pos, distance);
+    return in_bounds(pos);
 }
 
 bool needs_resolution(monster_type mon_type)
@@ -448,6 +571,7 @@ monster_type resolve_monster_type(monster_type mon_type,
                                   proximity_type proximity,
                                   coord_def *pos,
                                   unsigned mmask,
+                                  dungeon_char_type *stair_type,
                                   level_id *place,
                                   bool *want_band,
                                   bool allow_ood)
@@ -497,6 +621,29 @@ monster_type resolve_monster_type(monster_type mon_type,
     // (2) Take care of non-draconian random monsters.
     else if (_is_random_monster(mon_type))
     {
+        // Respect destination level for staircases.
+        if (proximity == PROX_NEAR_STAIRS)
+        {
+            const level_id orig_place = *place;
+
+            if (_find_mon_place_near_stairs(*pos, stair_type, *place))
+            {
+                // No monsters spawned in the Temple.
+                if (branches[place->branch].id == BRANCH_TEMPLE)
+                    proximity = PROX_AWAY_FROM_PLAYER;
+            }
+            else
+                proximity = PROX_AWAY_FROM_PLAYER;
+            if (proximity == PROX_NEAR_STAIRS)
+            {
+                dprf(DIAG_MONPLACE, "<1551>foreign monster from %s",
+                     place->describe().c_str());
+            }
+            else // we dunt cotton to no ferrniers in these here parts
+                *place = orig_place;
+
+        } // end proximity check
+
         // Only use the vault list if the monster comes from this level.
         if (!vault_mon_types.empty() && *place == level_id::current())
         {
@@ -546,16 +693,68 @@ monster_type resolve_monster_type(monster_type mon_type,
                     mon_type =
                         resolve_monster_type(mon_type, base_type,
                                              proximity, pos, mmask,
-                                             place, want_band, allow_ood);
+                                             stair_type, place,
+                                             want_band, allow_ood);
                 }
                 return mon_type;
             }
         }
 
-        // Now pick a monster of the given branch and level.
-        mon_type = pick_random_monster(*place, mon_type, place, allow_ood);
+        int tries = 0;
+        while (tries++ < 300)
+        {
+            level_id orig_place = *place;
+
+            // Now pick a monster of the given branch and level.
+            mon_type = pick_random_monster(*place, mon_type, place, allow_ood);
+
+            // Don't allow monsters too stupid to use stairs (e.g.
+            // non-spectral zombified undead) to be placed near
+            // stairs.
+            if (proximity != PROX_NEAR_STAIRS
+                || mons_class_can_use_stairs(mon_type))
+            {
+                break;
+            }
+
+            *place = orig_place;
+        }
+
+        if (proximity == PROX_NEAR_STAIRS && tries >= 300)
+            mon_type = pick_random_monster(*place, mon_type, place, allow_ood);
     }
     return mon_type;
+}
+
+// A short function to check the results of near_stairs().
+// Returns 0 if the point is not near stairs.
+// Returns 1 if the point is near unoccupied stairs.
+// Returns 2 if the point is near player-occupied stairs.
+static int _is_near_stairs(coord_def &p)
+{
+    int result = 0;
+
+    for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j)
+        {
+            if (!in_bounds(p))
+                continue;
+
+            const dungeon_feature_type feat = grd(p);
+            if (feat_is_stair(feat))
+            {
+                // Shouldn't matter for escape hatches.
+                if (feat_is_escape_hatch(feat))
+                    continue;
+
+                // Should there be several stairs, don't overwrite the
+                // player on stairs info.
+                if (result < 2)
+                    result = (p == you.pos()) ? 2 : 1;
+            }
+        }
+
+    return result;
 }
 
 // For generation purposes, don't treat simulacra of lava enemies as
@@ -592,18 +791,14 @@ static bool _valid_monster_generation_location(const mgen_data &mg,
         return false;
     }
 
-    bool close_to_player = grid_distance(you.pos(), mg_pos) <= LOS_RADIUS;
-    if (mg.proximity == PROX_AWAY_FROM_PLAYER && close_to_player
-        || mg.proximity == PROX_CLOSE_TO_PLAYER && !close_to_player)
+    // Check player proximity to avoid band members being placed
+    // close to the player erroneously.
+    // XXX: This is a little redundant with proximity checks in
+    // place_monster.
+    if (mg.proximity == PROX_AWAY_FROM_PLAYER
+        && grid_distance(you.pos(), mg_pos) <= LOS_RADIUS)
     {
         return false;
-    }
-    // Check that the location is not proximal to level stairs.
-    else if (mg.proximity == PROX_AWAY_FROM_STAIRS)
-    {
-        for (distance_iterator di(mg_pos, false, false, LOS_RADIUS); di; ++di)
-            if (feat_is_stone_stair(grd(*di)))
-                return false;
     }
 
     // Don't generate monsters on top of teleport traps.
@@ -620,6 +815,13 @@ static bool _valid_monster_generation_location(mgen_data &mg)
     return _valid_monster_generation_location(mg, mg.pos);
 }
 
+// Returns true if the player is on a level that should be sheltered from
+// OOD packs, based on depth and time spent on-level.
+static bool _in_ood_pack_protected_place()
+{
+    return env.turns_on_level < 1400 - env.absdepth0 * 117;
+}
+
 monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
 {
 #ifdef DEBUG_MON_CREATION
@@ -634,6 +836,7 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
         return nullptr;
 
     int tries = 0;
+    dungeon_char_type stair_type = NUM_DCHAR_TYPES;
 
     // (1) Early out (summoned to occupied grid).
     if (mg.use_position() && monster_at(mg.pos))
@@ -647,7 +850,10 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
     level_id place = mg.place;
     mg.cls = resolve_monster_type(mg.cls, mg.base_type, mg.proximity,
                                   &mg.pos, mg.map_mask,
-                                  &place, &want_band, allow_ood);
+                                  &stair_type,
+                                  &place,
+                                  &want_band,
+                                  allow_ood);
     bool chose_ood_monster = place.absdepth() > mg.place.absdepth() + 5;
     if (want_band)
         mg.flags |= MG_PERMIT_BANDS;
@@ -656,17 +862,28 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
         return 0;
 
     bool create_band = mg.permit_bands();
-    // If we drew an OOD monster and the level has less absdepth than D:13
-    // disable band generation. This applies only to randomly picked monsters
-    // -- chose_ood_monster will never be set true for explicitly specified
-    // monsters in vaults and other places.
-    if (chose_ood_monster && env.absdepth0 < 12)
+    // If we drew an OOD monster and there hasn't been much time spent
+    // on level, disable band generation. This applies only to
+    // randomly picked monsters -- chose_ood_monster will never be set
+    // true for explicitly specified monsters in vaults and other
+    // places.
+    if (chose_ood_monster && _in_ood_pack_protected_place())
     {
-        dprf(DIAG_MONPLACE,
-             "Chose monster with OOD roll: %s, disabling band generation",
-             get_monster_data(mg.cls)->name);
+        dprf(DIAG_MONPLACE, "<1552>Chose monster with OOD roll: %s,"
+                            " disabling band generation",
+                            get_monster_data(mg.cls)->name);
         create_band = false;
     }
+
+    // Re-check for PROX_NEAR_STAIRS here - if original monster
+    // type wasn't RANDOM_MONSTER then the position won't
+    // have been set.
+    if (mg.proximity == PROX_NEAR_STAIRS && mg.pos.origin())
+    {
+        level_id lev;
+        if (!_find_mon_place_near_stairs(mg.pos, &stair_type, lev))
+            mg.proximity = PROX_AWAY_FROM_PLAYER;
+    } // end proximity check
 
     if (mg.cls == MONS_PROGRAM_BUG)
         return 0;
@@ -696,7 +913,28 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
         ugly_thing_apply_uniform_band_colour(mg, band_monsters, band_size);
     }
 
-    // For first monster, choose location. This is pretty intensive.
+    // Returns 2 if the monster is placed near player-occupied stairs.
+    int pval = _is_near_stairs(mg.pos);
+    if (mg.proximity == PROX_NEAR_STAIRS)
+    {
+        // For some cases disallow monsters on stairs.
+        if (mons_class_is_stationary(mg.cls)
+            || (pval == 2 // Stairs occupied by player.
+                && (mons_class_base_speed(mg.cls) == 0
+                    || grd(mg.pos) == DNGN_LAVA
+                    || grd(mg.pos) == DNGN_DEEP_WATER)))
+        {
+            mg.proximity = PROX_AWAY_FROM_PLAYER;
+        }
+    }
+
+    // (4) For first monster, choose location. This is pretty intensive.
+    bool proxOK;
+    bool close_to_player;
+
+    // Player shoved out of the way?
+    bool shoved = false;
+
     if (!mg.use_position() && !force_pos)
     {
         tries = 0;
@@ -709,9 +947,12 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
         while (true)
         {
             if (tries++ >= 45)
-                return nullptr;
+                return 0;
 
-            mg.pos = random_in_bounds();
+            // Placement already decided for PROX_NEAR_STAIRS.
+            // Else choose a random point on the map.
+            if (mg.proximity != PROX_NEAR_STAIRS)
+                mg.pos = random_in_bounds();
 
             if (!_valid_monster_generation_location(mg))
                 continue;
@@ -720,20 +961,85 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
             if (map_masked(mg.pos, mg.map_mask))
                 continue;
 
+            // Let's recheck these even for PROX_NEAR_STAIRS, just in case.
+            // Check proximity to player.
+            proxOK = true;
+
+            switch (mg.proximity)
+            {
+            case PROX_ANYWHERE:
+                if (grid_distance(you.pos(), mg.pos) < 2 + random2(3))
+                    proxOK = false;
+                break;
+
+            case PROX_CLOSE_TO_PLAYER:
+            case PROX_AWAY_FROM_PLAYER:
+                // If this is supposed to measure los vs not los,
+                // then see_cell(mg.pos) should be used instead. (jpeg)
+                close_to_player = (grid_distance(you.pos(), mg.pos) <=
+                                   LOS_RADIUS);
+
+                if (mg.proximity == PROX_CLOSE_TO_PLAYER && !close_to_player
+                    || mg.proximity == PROX_AWAY_FROM_PLAYER && close_to_player)
+                {
+                    proxOK = false;
+                }
+                break;
+
+            case PROX_NEAR_STAIRS:
+                if (pval == 2) // player on stairs
+                {
+                    if (mons_class_base_speed(mg.cls) == 0)
+                    {
+                        proxOK = false;
+                        break;
+                    }
+                    // Swap the monster and the player spots, unless the
+                    // monster was generated in lava or deep water.
+                    if (grd(mg.pos) == DNGN_LAVA
+                        || grd(mg.pos) == DNGN_DEEP_WATER)
+                    {
+                        proxOK = false;
+                        break;
+                    }
+
+                    // You can't be shoved if you're caught in a net.
+                    if (you.caught())
+                    {
+                        proxOK = false;
+                        break;
+                    }
+
+                    shoved = true;
+                    coord_def mpos = mg.pos;
+                    mg.pos         = you.pos();
+                    you.moveto(mpos);
+                }
+                proxOK = (pval > 0);
+                break;
+            }
+
+            if (!proxOK)
+                continue;
+
+            // Cool.. passes all tests.
             break;
-        }
+        } // end while... place first monster
     }
-    // Sanity check that the specified position is valid.
     else if (!_valid_monster_generation_location(mg) && !dont_place)
-        return nullptr;
+    {
+        // Sanity check that the specified position is valid.
+        return 0;
+    }
 
-    monster* mon = _place_monster_aux(mg, nullptr, place, force_pos,
-                                      dont_place);
+    monster* mon = _place_monster_aux(mg, 0, place, force_pos, dont_place);
+
+    // Bail out now if we failed.
     if (!mon)
-        return nullptr;
+        return 0;
 
-    if (mg.props.exists(MAP_KEY))
-        mon->set_originating_map(mg.props[MAP_KEY].get_string());
+    if (mg.props.exists("map"))
+        mon->set_originating_map(mg.props["map"].get_string());
 
     if (mg.needs_patrol_point()
         || (mon->type == MONS_ALLIGATOR
@@ -741,7 +1047,7 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
     {
         mon->patrol_point = mon->pos();
 #ifdef DEBUG_PATHFIND
-        mprf("Monster %s is patrolling around (%d, %d).",
+        mprf("<1553>Monster %s is patrolling around (%d, %d).",
              mon->name(DESC_PLAIN).c_str(), mon->pos().x, mon->pos().y);
 #endif
     }
@@ -754,7 +1060,24 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
         big_cloud(CLOUD_TLOC_ENERGY, mon, mon->pos(), 3 + random2(3), 3, 3);
     }
 
-    if (player_in_branch(BRANCH_ABYSS) && you.can_see(*mon)
+    // Message to player from stairwell/gate/abyss appearance.
+    if (shoved)
+    {
+        mprf("<1554>%s(이)가 당신을 %s에서 밀어냈다!",
+             mon->visible_to(&you) ? mon->name(DESC_PLAIN).c_str() : "무언가",
+             stair_type == DCHAR_ARCH ? "관문" : "계단");
+    }
+    else if (mg.proximity == PROX_NEAR_STAIRS && you.can_see(*mon))
+    {
+        switch (stair_type)
+        {
+        case DCHAR_STAIRS_DOWN: mon->seen_context = SC_UPSTAIRS; break;
+        case DCHAR_STAIRS_UP:   mon->seen_context = SC_DOWNSTAIRS; break;
+        case DCHAR_ARCH:        mon->seen_context = SC_ARCH; break;
+        default: ;
+        }
+    }
+    else if (player_in_branch(BRANCH_ABYSS) && you.can_see(*mon)
              && !crawl_state.generating_level
              && !mg.summoner
              && !crawl_state.is_god_acting()
@@ -764,10 +1087,14 @@ monster* place_monster(mgen_data mg, bool force_pos, bool dont_place)
     }
 
     // Now, forget about banding if the first placement failed, or there are
-    // too many monsters already.
-    if (mon->mindex() >= MAX_MONSTERS - 30)
+    // too many monsters already, or we successfully placed by stairs.
+    if (mon->mindex() >= MAX_MONSTERS - 30
+        || (mg.proximity == PROX_NEAR_STAIRS))
+    {
         return mon;
+    }
 
+    // Not PROX_NEAR_STAIRS, so it will be part of a band, if there is any.
     if (band_size > 1)
         mon->flags |= MF_BAND_MEMBER;
 
@@ -871,7 +1198,7 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
             && !crawl_state.game_is_arena()
         || mons_class_flag(mg.cls, M_CANT_SPAWN))
     {
-        die("invalid monster to place: %s (%d)", mons_class_name(mg.cls), mg.cls);
+        die("<1555>invalid monster to place: %s (%d)", mons_class_name(mg.cls), mg.cls);
     }
 
     const monsterentry *m_ent = get_monster_data(mg.cls);
@@ -886,8 +1213,7 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
     // If the space is occupied, try some neighbouring square instead.
     if (dont_place)
         fpos.reset();
-    else if (!leader
-        && in_bounds(mg.pos)
+    else if (leader == 0 && in_bounds(mg.pos)
         && (mg.behaviour == BEH_FRIENDLY ||
             (!is_sanctuary(mg.pos) || mons_is_tentacle_segment(montype)))
         && !monster_at(mg.pos)
@@ -931,7 +1257,6 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
     mon->set_new_monster_id();
     mon->type         = mg.cls;
     mon->base_monster = mg.base_type;
-    mon->xp_tracking  = mg.xp_tracking;
 
     // Set pos and link monster into monster grid.
     if (!dont_place && !mon->move_to_pos(fpos))
@@ -972,25 +1297,6 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
     else
         define_monster(*mon);
 
-    if (mons_genus(mg.cls) == MONS_HYDRA)
-    {
-        // We're about to check m_ent->attack[1], so we may as well add a
-        // compile-time check to ensure that the array is at least 2 elements
-        // large, else we risk undefined behaviour (The array's size is known at
-        // compile time even though its value is not). This CHECK would only
-        // ever fail if we made it impossible for monsters to have two melee
-        // attacks, in which case the ASSERT becomes silly.
-        COMPILE_CHECK(ARRAYSZ(m_ent->attack) > 1);
-
-        // Usually hydrae have exactly one attack (which is implicitly repeated
-        // for each head), but a "hydra" may have zero if it is actually a
-        // hydra-shaped block of ice. We verify here that nothing "hydra-shaped"
-        // has more than one attack, because any that do will need cleaning up
-        // to fit into the attack-per-head policy.
-
-        ASSERT(m_ent->attack[1].type == AT_NONE);
-    }
-
     if (mon->type == MONS_MUTANT_BEAST)
     {
         vector<int> gen_facets;
@@ -998,7 +1304,12 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
             for (auto facet : mg.props[MUTANT_BEAST_FACETS].get_vector())
                 gen_facets.push_back(facet.get_int());
 
-        init_mutant_beast(*mon, mg.hd, gen_facets);
+        set<int> avoid_facets;
+        if (mg.props.exists(MUTANT_BEAST_AVOID_FACETS))
+            for (auto facet : mg.props[MUTANT_BEAST_AVOID_FACETS].get_vector())
+                avoid_facets.insert(facet.get_int());
+
+        init_mutant_beast(*mon, mg.hd, gen_facets, avoid_facets);
     }
 
     // Is it a god gift?
@@ -1099,7 +1410,7 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
         mon->colour = mg.colour;
     }
 
-    if (!mg.mname.empty())
+    if (mg.mname != "")
         mon->mname = mg.mname;
 
     if (mg.props.exists(MGEN_NUM_HEADS))
@@ -1230,6 +1541,9 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
 
     if (mon->has_spell(SPELL_DEFLECT_MISSILES))
         mon->add_ench(ENCH_DEFLECT_MISSILES);
+
+    if (mon->has_spell(SPELL_CIGOTUVIS_EMBRACE))
+        mon->add_ench(ENCH_BONE_ARMOUR);
 
     mon->flags |= MF_JUST_SUMMONED;
 
@@ -1467,7 +1781,7 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
     // A rare case of a debug message NOT showing in the debug mode.
     if (mons_class_flag(mon->type, M_UNFINISHED))
     {
-        mprf(MSGCH_WARN, "Warning: monster '%s' is not yet fully coded.",
+        mprf(MSGCH_WARN, "<1556>Warning: monster '%s' is not yet fully coded.",
              mon->name(DESC_PLAIN, true).c_str());
     }
 #endif
@@ -1477,7 +1791,7 @@ static monster* _place_monster_aux(const mgen_data &mg, const monster *leader,
     else if (!crawl_state.generating_level && !dont_place && you.can_see(*mon))
     {
         if (mg.flags & MG_DONT_COME)
-            mons_set_just_seen(mon);
+            mon->seen_context = SC_JUST_SEEN;
     }
 
     // Area effects can produce additional messages, and thus need to be
@@ -1881,6 +2195,7 @@ static const map<monster_type, band_set> bands_by_leader = {
     { MONS_TENGU_CONJURER,  { {2}, {{ BAND_TENGU, {1, 2}, true }}}},
     { MONS_TENGU_WARRIOR,   { {2}, {{ BAND_TENGU, {1, 2}, true }}}},
     { MONS_SOJOBO,          { {}, {{ BAND_SOJOBO, {2, 3}, true }}}},
+    { MONS_SPRIGGAN_AIR_MAGE, { {}, {{ BAND_AIR_ELEMENTALS, {2, 4}, true }}}},
     { MONS_SPRIGGAN_RIDER,  { {3}, {{ BAND_SPRIGGAN_RIDERS, {1, 3} }}}},
     { MONS_SPRIGGAN_BERSERKER, { {2}, {{ BAND_SPRIGGANS, {2, 4} }}}},
     { MONS_SPRIGGAN_DEFENDER, { {}, {{ BAND_SPRIGGAN_ELITES, {2, 5}, true }}}},
@@ -2096,6 +2411,7 @@ static const map<band_type, vector<member_possibilites>> band_membership = {
     { BAND_FLYING_SKULLS,       {{{MONS_FLYING_SKULL, 1}}}},
     { BAND_SHARD_SHRIKE,        {{{MONS_SHARD_SHRIKE, 1}}}},
     { BAND_SOJOBO,              {{{MONS_TENGU_REAVER, 1}}}},
+    { BAND_AIR_ELEMENTALS,      {{{MONS_AIR_ELEMENTAL, 1}}}},
     { BAND_HOWLER_MONKEY,       {{{MONS_HOWLER_MONKEY, 1}}}},
     { BAND_CAUSTIC_SHRIKE,      {{{MONS_CAUSTIC_SHRIKE, 1}}}},
     { BAND_DANCING_WEAPONS,     {{{MONS_DANCING_WEAPON, 1}}}},
@@ -2486,8 +2802,9 @@ static monster_type _band_member(band_type band, int which,
     {
         monster_type tmptype = MONS_PROGRAM_BUG;
         coord_def tmppos;
+        dungeon_char_type tmpfeat;
         return resolve_monster_type(RANDOM_BANDLESS_MONSTER, tmptype,
-                                    PROX_ANYWHERE, &tmppos, 0,
+                                    PROX_ANYWHERE, &tmppos, 0, &tmpfeat,
                                     &parent_place, nullptr, allow_ood);
     }
 
@@ -2518,16 +2835,11 @@ void debug_bands()
 
 static monster_type _pick_zot_exit_defender()
 {
-    // 10% Pan lord
-    //  - ~1% named pan lord / seraph
-    //  - ~9% random pan lord
-    // 15% Orb Guardian
-    // 40% Demon
-    //  - 25% greater demon
-    //  - 10% common demon
-    // 40% Pan spawn (can also include pan lords and demons)
-    if (one_chance_in(10))
+    if (one_chance_in(11))
     {
+#ifdef DEBUG_MON_CREATION
+        mprf(MSGCH_DIAGNOSTICS, "Create a pandemonium lord!");
+#endif
         for (int i = 0; i < 4; i++)
         {
             // Sometimes pick an unique lord whose rune you've stolen.
@@ -2540,17 +2852,18 @@ static monster_type _pick_zot_exit_defender()
             }
         }
 
-        if (one_chance_in(10))
+        if (one_chance_in(11))
             return MONS_SERAPH;
 
         return MONS_PANDEMONIUM_LORD;
     }
 
     return random_choose_weighted(
+        30, RANDOM_DEMON_COMMON,
+        30, RANDOM_DEMON,
+        20, pick_monster_no_rarity(BRANCH_PANDEMONIUM),
         15, MONS_ORB_GUARDIAN,
-        25, RANDOM_DEMON_GREATER,
-        10, RANDOM_DEMON_COMMON,
-        40, pick_monster_no_rarity(BRANCH_PANDEMONIUM));
+        5, RANDOM_DEMON_GREATER);
 }
 
 monster* mons_place(mgen_data mg)
@@ -2592,7 +2905,7 @@ monster* mons_place(mgen_data mg)
     if (!creation)
         return 0;
 
-    dprf(DIAG_MONPLACE, "Created %s.", creation->base_name(DESC_A, true).c_str());
+    dprf(DIAG_MONPLACE, "<1557>Created %s.", creation->base_name(DESC_A, true).c_str());
 
     // Look at special cases: CHARMED, FRIENDLY, NEUTRAL, GOOD_NEUTRAL,
     // HOSTILE.
@@ -2827,6 +3140,9 @@ conduct_type player_will_anger_monster(const monster &mon)
     if (god_hates_spellcasting(you.religion) && mon.is_actual_spellcaster())
         return DID_SPELL_CASTING;
 
+    if (you_worship(GOD_DITHMENOS) && mons_is_fiery(mon))
+        return DID_FIRE;
+
     return DID_NOTHING;
 }
 
@@ -2849,26 +3165,29 @@ bool player_angers_monster(monster* mon)
             switch (why)
             {
             case DID_EVIL:
-                mprf("%s is enraged by your holy aura!", mname.c_str());
+                mprf("<1558>당신의 신성한 기운이 %s을(를) 분노케 했다!", mname.c_str());
                 break;
             case DID_CORPSE_VIOLATION:
-                mprf("%s is revulsed by your support of nature!", mname.c_str());
+                mprf("<1559>%s은(는) 당신의 자연 수호에 강한 반감을 드러냈다!", mname.c_str());
                 break;
             case DID_HOLY:
-                mprf("%s is enraged by your evilness!", mname.c_str());
+                mprf("<1560>%s은(는) 당신의 사악함을 용서하지 않을 모양이다!", mname.c_str());
                 break;
             case DID_UNCLEAN:
             case DID_CHAOS:
-                mprf("%s is enraged by your lawfulness!", mname.c_str());
+                mprf("<1561>%s은(는) 당신의 신성한 기운을 가만 두지 않을 모양이다!", mname.c_str());
                 break;
             case DID_SPELL_CASTING:
-                mprf("%s is enraged by your magic-hating god!", mname.c_str());
+                mprf("<1562>%s은(는) 마법을 싫어하는 당신의 신에 대한 분노를 드러냈다!", mname.c_str());
+                break;
+            case DID_FIRE:
+                mprf("<1563>%s은(는) 당신의 어두움에 격분했다!", mname.c_str());
                 break;
             case DID_SACRIFICE_LOVE:
-                mprf("%s can only feel hate for you!", mname.c_str());
+                mprf("<1564>%s은(는) 오직 당신에 대한 증오만을 느낄 수 있다!", mname.c_str());
                 break;
             default:
-                mprf("%s is enraged by a buggy thing about you!", mname.c_str());
+                mprf("<1565>%s is enraged by a buggy thing about you!", mname.c_str());
                 break;
             }
         }
@@ -2926,7 +3245,7 @@ monster* create_monster(mgen_data mg, bool fail_msg)
             fail_msg = false;
 
         if (!summd && fail_msg && you.see_cell(mg.pos))
-            mpr("You see a puff of smoke.");
+            mpr("당신은 연기가 나는 것을 보았다.");
     }
 
     return summd;

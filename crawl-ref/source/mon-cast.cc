@@ -76,7 +76,6 @@
 #include "timed-effects.h"
 #include "traps.h"
 #include "travel.h"
-#include "unwind.h"
 #include "view.h"
 #include "viewchar.h"
 #include "xom.h"
@@ -86,12 +85,14 @@ static bool _valid_mon_spells[NUM_SPELLS];
 static const string MIRROR_RECAST_KEY = "mirror_recast_time";
 
 static god_type _find_god(const monster &mons, mon_spell_slot_flags flags);
+static int _mons_spellpower(spell_type spell, const monster &mons);
 static monster* _get_allied_target(const monster &caster, bolt &tracer);
 static void _fire_simple_beam(monster &caster, mon_spell_slot, bolt &beam);
 static void _fire_direct_explosion(monster &caster, mon_spell_slot, bolt &beam);
 static int  _mons_mesmerise(monster* mons, bool actual = true);
 static int  _mons_cause_fear(monster* mons, bool actual = true);
 static int  _mons_mass_confuse(monster* mons, bool actual = true);
+static int  _mons_control_undead(monster* mons, bool actual = true);
 static coord_def _mons_fragment_target(const monster &mons);
 static coord_def _mons_conjure_flame_pos(const monster &mon);
 static coord_def _mons_awaken_earth_target(const monster& mon);
@@ -141,7 +142,6 @@ static function<bool(const monster&)> _setup_hex_check(spell_type spell);
 static bool _worth_hexing(const monster &caster, spell_type spell);
 static bool _torment_vulnerable(actor* victim);
 static function<bool(const monster&)> _should_selfench(enchant_type ench);
-static void _cast_grasping_roots(monster &caster, mon_spell_slot, bolt&);
 
 enum spell_logic_flag
 {
@@ -250,13 +250,12 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
                        || player_prot_life(false) >= 3);
         },
         [](monster &caster, mon_spell_slot slot, bolt&) {
-            const int splpow = mons_spellpower(caster, slot.spell);
+            const int splpow = _mons_spellpower(slot.spell, caster);
 
             int damage = 0;
-            fire_los_attack_spell(slot.spell, splpow, &caster, nullptr, false,
-                                  &damage);
+            fire_los_attack_spell(slot.spell, splpow, &caster, false, &damage);
             if (damage > 0 && caster.heal(damage))
-                simple_monster_message(caster, " is healed.");
+                simple_monster_message(caster, "은 치유되었다.");
         },
         nullptr,
         MSPELL_NO_AUTO_NOISE,
@@ -268,8 +267,8 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
                    && (!caster.friendly() || !you.visible_to(&caster));
         },
         [](monster &caster, mon_spell_slot slot, bolt&) {
-            const int splpow = mons_spellpower(caster, slot.spell);
-            fire_los_attack_spell(slot.spell, splpow, &caster, nullptr, false);
+            const int splpow = _mons_spellpower(slot.spell, caster);
+            fire_los_attack_spell(slot.spell, splpow, &caster, false);
         },
         nullptr,
         MSPELL_LOGIC_NONE,
@@ -282,7 +281,7 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
         },
         [](monster &caster, mon_spell_slot, bolt&) {
             const string god = apostrophise(god_name(caster.god));
-            const string msg = make_stringf(" invokes %s protection!",
+            const string msg = make_stringf("<1393>  %s의 보호를 요청한다!",
                                             god.c_str());
             simple_monster_message(caster, msg.c_str(), MSGCH_MONSTER_SPELL);
             // Not spell_hd(spell_cast); this is an invocation
@@ -303,8 +302,8 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
         [](monster &caster, mon_spell_slot, bolt&) {
             if (you.can_see(caster))
             {
-                mprf("%s liquefies the ground around %s!",
-                     caster.name(DESC_THE).c_str(),
+                mprf("<1394>%s이(가) %s 주변의 땅을 액화시켰다!",
+                     caster.name(DESC_PLAIN).c_str(),
                      caster.pronoun(PRONOUN_REFLEXIVE).c_str());
                 flash_view_delay(UA_MONSTER, BROWN, 80);
             }
@@ -348,7 +347,7 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
         [](monster &caster, mon_spell_slot slot, bolt&) {
             enchant_actor_with_flavour(caster.get_foe(), &caster,
                                        BEAM_DRAIN_MAGIC,
-                                       mons_spellpower(caster, slot.spell));
+                                       _mons_spellpower(slot.spell, caster));
         },
     } },
     { SPELL_WATER_ELEMENTALS, { _always_worthwhile, _mons_summon_elemental } },
@@ -381,7 +380,7 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
     { SPELL_LRD, {
         _always_worthwhile,
         [](monster &caster, mon_spell_slot slot, bolt& pbolt) {
-            const int splpow = mons_spellpower(caster, slot.spell);
+            const int splpow = _mons_spellpower(slot.spell, caster);
             cast_fragmentation(splpow, &caster, pbolt.target, false);
         },
         _target_beam_setup(_mons_fragment_target),
@@ -392,7 +391,7 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
             return !(env.level_state & LSTATE_STILL_WINDS);
         },
         [](monster &caster, mon_spell_slot slot, bolt& pbolt) {
-            const int splpow = mons_spellpower(caster, slot.spell);
+            const int splpow = _mons_spellpower(slot.spell, caster);
             if ((!in_bounds(pbolt.target)
                  || conjure_flame(&caster, splpow, pbolt.target, false)
                     != SPRET_SUCCESS)
@@ -461,12 +460,6 @@ static const map<spell_type, mons_spell_logic> spell_to_logic = {
         [](monster &caster, mon_spell_slot, bolt&) {
             caster.add_ench(ENCH_RING_OF_THUNDER);
     } } },
-    { SPELL_GRASPING_ROOTS, {
-        [](const monster &caster)
-        {
-            const actor* foe = caster.get_foe();
-            return foe && caster.can_constrict(foe, false);
-        }, _cast_grasping_roots, } },
 };
 
 /// Is the 'monster' actually a proxy for the player?
@@ -703,12 +696,12 @@ static void _cast_cantrip(monster &mons, mon_spell_slot slot, bolt& pbolt)
     {
         const char* msgs[] =
         {
-            " casts a cantrip, but nothing happens.",
-            " begins to cast a cantrip, but forgets the words!",
-            " miscasts a cantrip.",
-            " looks braver for a moment.",
-            " looks encouraged for a moment.",
-            " looks satisfied for a moment.",
+            "이 장난을 외웠지만, 아무 일도 일어나지 않았다.",
+            "이 장난을 외우기 시작했지만, 단어를 잊어버렸다!",
+            "이 장난을 사용하는데 실패했다.",
+            "은 잠시 용감해보였다.",
+            "은 잠시 용맹해진 것 같다.",
+            "은 잠시 만족스러워 보인다.",
         };
 
         simple_monster_message(mons, RANDOM_ELEMENT(msgs), channel);
@@ -726,7 +719,7 @@ static void _cast_cantrip(monster &mons, mon_spell_slot slot, bolt& pbolt)
         {
             slugform = replace_all(slugform, "@The_monster@",
                                    mons.name(DESC_THE));
-            mprf(channel, "%s", slugform.c_str());
+            mprf(channel, "<1395>%s", slugform.c_str());
         }
     }
     else if (!friendly && !has_mon_foe)
@@ -750,7 +743,7 @@ static void _cast_cantrip(monster &mons, mon_spell_slot slot, bolt& pbolt)
         {
             slugform = replace_all(slugform, "@The_monster@",
                                    mons.get_foe()->name(DESC_THE));
-            mprf(channel, "%s", slugform.c_str());
+            mprf(channel, "<1396>%s", slugform.c_str());
         }
     }
 }
@@ -758,7 +751,7 @@ static void _cast_cantrip(monster &mons, mon_spell_slot slot, bolt& pbolt)
 static void _cast_injury_mirror(monster &mons, mon_spell_slot slot, bolt&)
 {
     const string msg
-        = make_stringf(" offers %s to %s, and fills with unholy energy.",
+        = make_stringf("<1397>은 %s을(를) %s에게 바치고, 불경한 에너지로 가득찼다.",
                        mons.pronoun(PRONOUN_REFLEXIVE).c_str(),
                        god_name(mons.god).c_str());
     simple_monster_message(mons, msg.c_str(), MSGCH_MONSTER_SPELL);
@@ -775,40 +768,18 @@ static void _cast_smiting(monster &caster, mon_spell_slot slot, bolt&)
     ASSERT(foe);
 
     if (foe->is_player())
-        mprf("%s smites you!", _god_name(god).c_str());
+        mprf("<1398>%s이(가) 당신을 강타했다!", _god_name(god).c_str());
     else
-        simple_monster_message(*foe->as_monster(), " is smitten.");
+        simple_monster_message(*foe->as_monster(), "이(가) 강타당했다.");
 
     foe->hurt(&caster, 7 + random2avg(11, 2), BEAM_MISSILE, KILLED_BY_BEAM,
-              "", "by divine providence");
-}
-
-static void _cast_grasping_roots(monster &caster, mon_spell_slot, bolt&)
-{
-    actor* foe = caster.get_foe();
-    ASSERT(foe);
-
-    const int turns = 4 + random2avg(div_rand_round(
-                mons_spellpower(caster, SPELL_GRASPING_ROOTS), 10), 2);
-    dprf("Grasping roots turns: %d", turns);
-    mpr("Roots burst forth from the earth!");
-    if (foe->is_player())
-    {
-        you.increase_duration(DUR_GRASPING_ROOTS, turns);
-        caster.start_constricting(you);
-        mprf(MSGCH_WARN, "The grasping roots grab you!");
-    }
-    else
-    {
-        caster.add_ench(mon_enchant(ENCH_GRASPING_ROOTS, 0, foe,
-                    turns * BASELINE_DELAY));
-    }
+              "", "신의 섭리에 의해");
 }
 
 /// Is the given full-LOS attack spell worth casting for the given monster?
 static bool _los_spell_worthwhile(const monster &mons, spell_type spell)
 {
-    return trace_los_attack_spell(spell, mons_spellpower(mons, spell), &mons)
+    return trace_los_attack_spell(spell, _mons_spellpower(spell, mons), &mons)
            == SPRET_SUCCESS;
 }
 
@@ -850,7 +821,6 @@ void init_mons_spells()
     monster fake_mon;
     fake_mon.type       = MONS_BLACK_DRACONIAN;
     fake_mon.hit_points = 1;
-    fake_mon.mid = MID_NOBODY; // used indirectly, through _mon_special_name
 
     bolt pbolt;
 
@@ -1135,7 +1105,7 @@ int mons_power_for_hd(spell_type spell, int hd, bool random)
  * @return          A spellpower value for the spell.
  *                  May vary from call to call for certain weird spells.
  */
-int mons_spellpower(const monster &mons, spell_type spell)
+static int _mons_spellpower(spell_type spell, const monster &mons)
 {
     return mons_power_for_hd(spell, mons.spell_hd(spell));
 }
@@ -1152,12 +1122,12 @@ int mons_spellpower(const monster &mons, spell_type spell)
 static int _ench_power(spell_type spell, const monster &mons)
 {
     const int cap = 200;
-    return min(cap, mons_spellpower(mons, spell) / ENCH_POW_FACTOR);
+    return min(cap, _mons_spellpower(spell, mons) / ENCH_POW_FACTOR);
 }
 
-static int _mons_spell_range(const monster &mons, spell_type spell)
+static int _mons_spell_range(spell_type spell, const monster &mons)
 {
-    return mons_spell_range_for_hd(spell, mons.spell_hd());
+    return mons_spell_range(spell, _mons_spellpower(spell, mons));
 }
 
 /**
@@ -1168,7 +1138,7 @@ static int _mons_spell_range(const monster &mons, spell_type spell)
  * @param hd        The monster's effective HD for spellcasting purposes.
  * @return          -1 if the spell has an undefined range; else its range.
  */
-int mons_spell_range_for_hd(spell_type spell, int hd)
+int mons_spell_range(spell_type spell, int hd)
 {
     switch (spell)
     {
@@ -1259,7 +1229,7 @@ bolt mons_spell_beam(const monster* mons, spell_type spell_cast, int power,
     beam.is_explosion = false;
     beam.attitude     = mons_attitude(*mons);
 
-    beam.range = _mons_spell_range(*mons, spell_cast);
+    beam.range = _mons_spell_range(spell_cast, *mons);
 
     spell_type real_spell = spell_cast;
 
@@ -1328,7 +1298,6 @@ bolt mons_spell_beam(const monster* mons, spell_type spell_cast, int power,
     case SPELL_STEAM_BALL:
     case SPELL_TELEPORT_OTHER:
     case SPELL_SANDBLAST:
-    case SPELL_HARPOON_SHOT:
         zappy(spell_to_zap(real_spell), power, true, beam);
         break;
 
@@ -1711,11 +1680,11 @@ bolt mons_spell_beam(const monster* mons, spell_type spell_cast, int power,
 
         if (!is_valid_spell(real_spell))
         {
-            die("Invalid spell #%d cast by %s", (int) real_spell,
+            die("<1399>Invalid spell #%d cast by %s", (int) real_spell,
                      mons->name(DESC_PLAIN, true).c_str());
         }
 
-        die("Unknown monster spell '%s' cast by %s",
+        die("<1400>Unknown monster spell '%s' cast by %s",
                  spell_title(real_spell),
                  mons->name(DESC_PLAIN, true).c_str());
     }
@@ -1772,8 +1741,8 @@ bool setup_mons_cast(const monster* mons, bolt &pbolt, spell_type spell_cast,
     case SPELL_ANIMATE_DEAD:
 #endif
     case SPELL_TWISTED_RESURRECTION:
-#if TAG_MAJOR_VERSION == 34
     case SPELL_CIGOTUVIS_EMBRACE:
+#if TAG_MAJOR_VERSION == 34
     case SPELL_SIMULACRUM:
 #endif
     case SPELL_CALL_IMP:
@@ -1859,12 +1828,12 @@ bool setup_mons_cast(const monster* mons, bolt &pbolt, spell_type spell_cast,
     case SPELL_WIND_BLAST:
     case SPELL_SUMMON_VERMIN:
     case SPELL_TORNADO:
-    case SPELL_VORTEX:
     case SPELL_DISCHARGE:
     case SPELL_IGNITE_POISON:
 #if TAG_MAJOR_VERSION == 34
     case SPELL_EPHEMERAL_INFUSION:
 #endif
+    case SPELL_CHAIN_OF_CHAOS:
     case SPELL_BLACK_MARK:
 #if TAG_MAJOR_VERSION == 34
     case SPELL_GRAND_AVATAR:
@@ -1891,8 +1860,8 @@ bool setup_mons_cast(const monster* mons, bolt &pbolt, spell_type spell_cast,
 #if TAG_MAJOR_VERSION == 34
     case SPELL_HUNTING_CRY:
     case SPELL_CONDENSATION_SHIELD:
-    case SPELL_CONTROL_UNDEAD:
 #endif
+    case SPELL_CONTROL_UNDEAD:
     case SPELL_CLEANSING_FLAME:
     case SPELL_DRAINING_GAZE:
     case SPELL_CONFUSION_GAZE:
@@ -1936,7 +1905,7 @@ bool setup_mons_cast(const monster* mons, bolt &pbolt, spell_type spell_cast,
     }
     }
 
-    const int power = mons_spellpower(*mons, spell_cast);
+    const int power = _mons_spellpower(spell_cast, *mons);
 
     bolt theBeam = mons_spell_beam(mons, spell_cast, power);
 
@@ -1973,14 +1942,20 @@ static bool _animate_dead_okay(spell_type spell)
         return true;
 
     if (you_are_delayed() && current_delay()->is_butcher()
-        || is_vampire_feeding()
-        || you.hunger_state < HS_SATIATED
-           && you.get_base_mutation_level(MUT_HERBIVOROUS) == 0
-        || god_hates_spell(spell, you.religion)
-        || will_have_passive(passive_t::convert_orcs))
+        || is_vampire_feeding())
     {
         return false;
     }
+
+    if (you.hunger_state < HS_SATIATED && you.get_base_mutation_level(MUT_HERBIVOROUS) < 3)
+        return false;
+
+    if (god_hates_spell(spell, you.religion))
+        return false;
+
+    // Annoying to drag around hordes of the undead as well as the living.
+    if (will_have_passive(passive_t::convert_orcs))
+        return false;
 
     return true;
 }
@@ -2083,8 +2058,8 @@ static void _print_battlecry_announcement(const monster& chief,
 
     if (seen_affected.size() == 1)
     {
-        mprf(channel, "%s goes into a battle-frenzy!",
-             seen_affected[0]->name(DESC_THE).c_str());
+        mprf(channel, "<1401>%s이(가) 전투의 광란에 빠져들었다!",
+             seen_affected[0]->name(DESC_PLAIN).c_str());
         return;
     }
 
@@ -2101,8 +2076,8 @@ static void _print_battlecry_announcement(const monster& chief,
 
     const string ally_desc
         = pluralise_monster(mons_type_name(group_type, DESC_PLAIN));
-    mprf(channel, "%s %s go into a battle-frenzy!",
-         chief.friendly() ? "Your" : "The", ally_desc.c_str());
+    mprf(channel, "<1402>%s %s이(가) 전투의 광란에 빠져들었다!",
+         chief.friendly() ? "당신의" : "", ally_desc.c_str());
 }
 
 /**
@@ -2268,37 +2243,15 @@ static void _set_door(set<coord_def> door, dungeon_feature_type feat)
     }
 }
 
-static int _tension_door_closed(set<coord_def> door,
-                                                dungeon_feature_type old_feat)
-{
-    // this unwind is a bit heavy, but because out-of-los clouds dissipate
-    // instantly, they can be wiped out by these door tests.
-    unwind_var<map<coord_def, cloud_struct>> cloud_state(env.cloud);
-    _set_door(door, DNGN_CLOSED_DOOR);
-    const int new_tension = get_tension(GOD_NO_GOD);
-    _set_door(door, old_feat);
-    return new_tension;
-}
-
-/**
- * Can any actors and items be pushed out of a doorway? An actor can be pushed
- * for purposes of this check if there is a habitable target location and the
- * actor is either the player or non-hostile. Items can be moved if there is
- * any free space.
- *
- * @param door the door position
- *
- * @return true if any actors and items can be pushed out of the door.
- */
 static bool _can_force_door_shut(const coord_def& door)
 {
     if (grd(door) != DNGN_OPEN_DOOR)
         return false;
 
     set<coord_def> all_door;
+    vector<coord_def> veto_spots;
     find_connected_identical(door, all_door);
-    auto veto_spots = vector<coord_def>(all_door.begin(), all_door.end());
-    auto door_spots = veto_spots;
+    copy(all_door.begin(), all_door.end(), back_inserter(veto_spots));
 
     for (const auto &dc : all_door)
     {
@@ -2311,88 +2264,40 @@ static bool _can_force_door_shut(const coord_def& door)
                 || act->is_monster()
                     && act->as_monster()->attitude != ATT_HOSTILE)
             {
-                vector<coord_def> targets = get_push_spaces(dc, true, &veto_spots);
-                if (targets.empty())
+                coord_def newpos;
+                if (!get_push_space(dc, newpos, act, true, &veto_spots))
                     return false;
-                veto_spots.push_back(targets.front());
+                else
+                    veto_spots.push_back(newpos);
             }
             else
                 return false;
         }
         // If there are items in the way, see if there's room to push them
-        // out of the way. Having push space for an actor doesn't guarantee
-        // push space for items (e.g. with a flying actor over lava).
-        if (igrd(dc) != NON_ITEM)
+        // out of the way
+        else if (igrd(dc) != NON_ITEM)
         {
-            if (!has_push_spaces(dc, false, &door_spots))
+            if (!has_push_space(dc, 0))
                 return false;
         }
     }
 
-    // Didn't find any actors or items we couldn't displace
+    // Didn't find any items we couldn't displace
     return true;
 }
 
-/**
- * Get push spaces for an actor that maximize tension. If there are any push
- * spaces at all, this function is guaranteed to return something.
- *
- * @param pos the position of the actor
- * @param excluded a set of pre-excluded spots
- *
- * @return a vector of coordinates, empty if there are no push spaces at all.
- */
-static vector<coord_def> _get_push_spaces_max_tension(const coord_def& pos,
-                                            const vector<coord_def>* excluded)
-{
-    vector<coord_def> possible_spaces = get_push_spaces(pos, true, excluded);
-    if (possible_spaces.empty())
-        return possible_spaces;
-    vector<coord_def> best;
-    int max_tension = -1;
-    actor *act = actor_at(pos);
-    ASSERT(act);
-
-    for (auto c : possible_spaces)
-    {
-        set<coord_def> all_door;
-        find_connected_identical(pos, all_door);
-        dungeon_feature_type old_feat = grd(pos);
-
-        act->move_to_pos(c);
-        int new_tension = _tension_door_closed(all_door, old_feat);
-        act->move_to_pos(pos);
-
-        if (new_tension == max_tension)
-            best.push_back(c);
-        else if (new_tension > max_tension)
-        {
-            max_tension = new_tension;
-            best.clear();
-            best.push_back(c);
-        }
-    }
-    return best;
-}
-
-/**
- * Would forcing a door shut (possibly pushing the player) lower tension too
- * much?
- *
- * @param door the door to check
- *
- * @return true iff forcing the door shut won't lower tension by more than 1/3.
- */
 static bool _should_force_door_shut(const coord_def& door)
 {
     if (grd(door) != DNGN_OPEN_DOOR)
         return false;
 
     dungeon_feature_type old_feat = grd(door);
+    int cur_tension = get_tension(GOD_NO_GOD);
 
     set<coord_def> all_door;
+    vector<coord_def> veto_spots;
     find_connected_identical(door, all_door);
-    auto veto_spots = vector<coord_def>(all_door.begin(), all_door.end());
+    copy(all_door.begin(), all_door.end(), back_inserter(veto_spots));
 
     bool player_in_door = false;
     for (const auto &dc : all_door)
@@ -2404,20 +2309,24 @@ static bool _should_force_door_shut(const coord_def& door)
         }
     }
 
-    const int cur_tension = get_tension(GOD_NO_GOD);
-    coord_def oldpos = you.pos();
-
+    int new_tension;
     if (player_in_door)
     {
-        coord_def newpos =
-                _get_push_spaces_max_tension(you.pos(), &veto_spots).front();
+        coord_def newpos;
+        coord_def oldpos = you.pos();
+        get_push_space(oldpos, newpos, &you, false, &veto_spots);
         you.move_to_pos(newpos);
-    }
-
-    const int new_tension = _tension_door_closed(all_door, old_feat);
-
-    if (player_in_door)
+        _set_door(all_door, DNGN_CLOSED_DOOR);
+        new_tension = get_tension(GOD_NO_GOD);
+        _set_door(all_door, old_feat);
         you.move_to_pos(oldpos);
+    }
+    else
+    {
+        _set_door(all_door, DNGN_CLOSED_DOOR);
+        new_tension = get_tension(GOD_NO_GOD);
+        _set_door(all_door, old_feat);
+    }
 
     // If closing the door would reduce player tension by too much, probably
     // it is scarier for the player to leave it open and thus it should be left
@@ -2425,6 +2334,118 @@ static bool _should_force_door_shut(const coord_def& door)
 
     // Currently won't allow tension to be lowered by more than 33%
     return ((cur_tension - new_tension) * 3) <= cur_tension;
+}
+
+/*
+ * Find an adjacent space to displace a stack of items or a creature.
+ *
+ * @param pos the starting position to displace from.
+ * @param newpos if successful, will populate this with the new position.
+ * @param act an actor to displace, or null if the goal is to displace items.
+ * @param ignore_tension should displacement ignore tension, or prioritize spots
+ *                       that maximize tension?  Used for vault wardens, and
+ *                       only affects pushing actors.
+ * @param excluded any spots to rule out a priori. Used for e.g. imprison.
+ *
+ * @return whether displacement is possible. If successful, will also populate
+ *         `newpos` with the preferred target. Otherwise, will not change
+ *         `newpos`.
+ */
+bool get_push_space(const coord_def& pos, coord_def& newpos, actor* act,
+                    bool ignore_tension, const vector<coord_def>* excluded)
+{
+    if (act && act->is_stationary())
+        return false;
+
+    dungeon_feature_type starting_feat = grd(pos);
+    int max_tension = -1;
+    coord_def best_spot(-1, -1);
+    bool can_push = false;
+    bool found_non_deep_spot = false; // used for pushing items only
+    for (adjacent_iterator ai(pos); ai; ++ai)
+    {
+        dungeon_feature_type feat = grd(*ai);
+
+        // Make sure the spot wasn't already vetoed. This is used e.g. for
+        // imprison to pre-exclude all the spots where a wall will be.
+        if (excluded && find(begin(*excluded), end(*excluded), *ai)
+                            != end(*excluded))
+        {
+            continue;
+        }
+
+        // can never push to a solid space
+        if (feat_is_solid(feat))
+            continue;
+
+        // Extra checks if we're moving a monster instead of an item
+        if (act)
+        {
+            // these should get deep water and lava for cases where they matter
+            if (actor_at(*ai)
+                || !act->can_pass_through(*ai)
+                || !act->is_habitable(*ai))
+            {
+                continue;
+            }
+
+            // If we don't care about tension, first valid spot is acceptable
+            if (ignore_tension)
+            {
+                newpos = *ai;
+                return true;
+            }
+            else // Calculate tension with monster at new location
+            {
+                set<coord_def> all_door;
+                find_connected_identical(pos, all_door);
+                dungeon_feature_type old_feat = grd(pos);
+
+                act->move_to_pos(*ai);
+                _set_door(all_door, DNGN_CLOSED_DOOR);
+                int new_tension = get_tension(GOD_NO_GOD);
+                _set_door(all_door, old_feat);
+                act->move_to_pos(pos);
+
+                if (new_tension > max_tension)
+                {
+                    max_tension = new_tension;
+                    best_spot = *ai;
+                    can_push = true;
+                }
+            }
+        }
+        else
+        {
+            if (feat_has_solid_floor(feat))
+            {
+                // TODO (?): this will allow pushing items out of deep water.
+                best_spot = *ai;
+                found_non_deep_spot = true;
+                can_push = true;
+            }
+            else if (!found_non_deep_spot
+                && starting_feat == DNGN_DEEP_WATER
+                && feat == DNGN_DEEP_WATER)
+            {
+                // dispreferentially allow pushing items from deep water to deep water
+                best_spot = *ai;
+                can_push = true;
+            }
+            // otherwise, can't position an item on this spot
+        }
+    }
+
+    if (can_push)
+        newpos = best_spot;
+    return can_push;
+}
+
+bool has_push_space(const coord_def& pos, actor* act,
+                    const vector<coord_def>* excluded)
+{
+    coord_def dummy(-1, -1);
+    return get_push_space(pos, dummy, act, true, excluded);
 }
 
 static bool _seal_doors_and_stairs(const monster* warden,
@@ -2441,7 +2462,6 @@ static bool _seal_doors_and_stairs(const monster* warden,
     if (!warden->can_see(you) || warden->foe != MHITYOU)
         return false;
 
-    // Greedy iteration through doors/stairs that you can see.
     for (radius_iterator ri(you.pos(), LOS_RADIUS, C_SQUARE);
                  ri; ++ri)
     {
@@ -2458,34 +2478,36 @@ static bool _seal_doors_and_stairs(const monster* warden,
                 return true;
 
             set<coord_def> all_door;
+            vector<coord_def> veto_spots;
             find_connected_identical(*ri, all_door);
-            auto veto_spots = vector<coord_def>(all_door.begin(), all_door.end());
-            auto door_spots = veto_spots;
-
+            copy(all_door.begin(), all_door.end(), back_inserter(veto_spots));
             for (const auto &dc : all_door)
             {
                 // If there are things in the way, push them aside
-                // This is only reached for the player or non-hostile actors
                 actor* act = actor_at(dc);
-                if (act)
+                if (igrd(dc) != NON_ITEM || act)
                 {
-                    vector<coord_def> targets =
-                                _get_push_spaces_max_tension(dc, &veto_spots);
-                    // at this point, _can_force_door_shut should have
-                    // indicated that the door can be shut.
-                    ASSERTM(!targets.empty(), "No push space from (%d,%d)",
-                                                                dc.x, dc.y);
-                    coord_def newpos = targets.front();
+                    coord_def newpos;
+                    // If we don't find a spot, try again ignoring tension.
+                    const bool success =
+                        get_push_space(dc, newpos, act, false, &veto_spots)
+                        || get_push_space(dc, newpos, act, true, &veto_spots);
+                    // this assert is only triggered if the code here is out of
+                    // sync with _can_force_door_shut.
+                    ASSERTM(success, "No push space from (%d,%d)", dc.x, dc.y);
 
-                    actor_at(dc)->move_to_pos(newpos);
-                    if (act->is_player())
+                    move_items(dc, newpos);
+                    if (act)
                     {
-                        stop_delay(true);
-                        player_pushed = true;
+                        actor_at(dc)->move_to_pos(newpos);
+                        if (act->is_player())
+                        {
+                            stop_delay(true);
+                            player_pushed = true;
+                        }
+                        veto_spots.push_back(newpos);
                     }
-                    veto_spots.push_back(newpos);
                 }
-                push_items_from(dc, &door_spots);
             }
 
             // Close the door
@@ -2559,16 +2581,16 @@ static bool _seal_doors_and_stairs(const monster* warden,
     if (had_effect)
     {
         ASSERT(!check_only);
-        mprf(MSGCH_MONSTER_SPELL, "%s activates a sealing rune.",
-                (warden->visible_to(&you) ? warden->name(DESC_THE, true).c_str()
-                                          : "Someone"));
+        mprf(MSGCH_MONSTER_SPELL, "<1403>%s이(가) 봉인의 룬을 발동했다.",
+                (warden->visible_to(&you) ? warden->name(DESC_PLAIN, true).c_str()
+                                          : "누군가"));
         if (num_closed > 1)
-            mpr("The doors slam shut!");
+            mpr("그 문이 쾅 하고 닫혔다!");
         else if (num_closed == 1)
-            mpr("A door slams shut!");
+            mpr("문이 쾅 하고 닫혔다!");
 
         if (player_pushed)
-            mpr("You are pushed out of the doorway!");
+            mpr("당신은 출입구 밖으로 밀려났다!");
 
         return true;
     }
@@ -2657,14 +2679,14 @@ static bool _make_monster_angry(const monster* mon, monster* targ, bool actual)
         if (mon->type == MONS_QUEEN_BEE && (targ->type == MONS_KILLER_BEE ||
                                             targ->type == MONS_MELIAI))
         {
-            mprf("%s calls on %s to defend %s!",
-                mon->name(DESC_THE).c_str(),
-                targ->name(DESC_THE).c_str(),
+            mprf("<1404>%s이(가) %s에게 %s을(를) 지킬 것을 명령했다!",
+                mon->name(DESC_PLAIN).c_str(),
+                targ->name(DESC_PLAIN).c_str(),
                 mon->pronoun(PRONOUN_OBJECTIVE).c_str());
         }
         else
-            mprf("%s goads %s on!", mon->name(DESC_THE).c_str(),
-                 targ->name(DESC_THE).c_str());
+            mprf("<1405>%s이(가) %s을(를) 부추겼다!", mon->name(DESC_PLAIN).c_str(),
+                 targ->name(DESC_PLAIN).c_str());
     }
 
     targ->go_berserk(false);
@@ -2811,7 +2833,7 @@ bool mons_word_of_recall(monster* mons, int recall_target)
             mon->behaviour = BEH_SEEK;
             mon->foe = foe;
             ++num_recalled;
-            simple_monster_message(*mon, " is recalled.");
+            simple_monster_message(*mon, "은(는) 소집했다.");
         }
         // Can only recall a couple things at once
         if (num_recalled == recall_target)
@@ -2854,7 +2876,7 @@ static bool _awaken_vines(monster* mon, bool test_only = false)
 {
     if (_is_wiz_cast())
     {
-        mprf("Sorry, this spell isn't supported for dummies!"); //mons dummy
+        mprf("유감이지만, 이 주문은 가짜에게는 적용되지 않는다!"); //mons dummy
         return false;
     }
 
@@ -2923,7 +2945,7 @@ static bool _awaken_vines(monster* mon, bool test_only = false)
     else
     {
         if (seen)
-            mpr("Vines fly forth from the trees!");
+            mpr("숲으로부터 덩굴이 날아왔다!");
         return true;
     }
 }
@@ -3120,7 +3142,7 @@ static bool _wall_of_brambles(monster* mons)
     }
 
     if (seen)
-        mpr("Thorny briars emerge from the ground!");
+        mpr("가시돋힌 관목이 땅으로부터 솟아났다!");
 
     return true;
 }
@@ -3225,7 +3247,7 @@ static bool _trace_los(monster* agent, bool (*vulnerable)(actor*))
 
 static bool _tornado_vulnerable(actor* victim)
 {
-    return !victim->res_tornado();
+    return !victim->res_wind();
 }
 
 static bool _torment_vulnerable(actor* victim)
@@ -3246,6 +3268,11 @@ static bool _mutation_vulnerable(actor* victim)
     return victim->can_mutate();
 }
 
+static bool _dummy_vulnerable(actor* victim)
+{
+    return true;
+}
+
 static void _cast_black_mark(monster* agent)
 {
     for (actor_near_iterator ai(agent, LOS_NO_TRANS); ai; ++ai)
@@ -3258,7 +3285,7 @@ static void _cast_black_mark(monster* agent)
             && mons_has_attacks(*mon))
         {
             mon->add_ench(ENCH_BLACK_MARK);
-            simple_monster_message(*mon, " begins absorbing vital energies!");
+            simple_monster_message(*mon, "은(는) 생명력을 흡수하기 시작했다!");
         }
     }
 }
@@ -3275,9 +3302,9 @@ void aura_of_brilliance(monster* agent)
         {
             if (!mon->has_ench(ENCH_EMPOWERED_SPELLS) && you.can_see(*mon))
             {
-               mprf("%s is empowered by %s aura!",
-                    mon->name(DESC_THE).c_str(),
-                    apostrophise(agent->name(DESC_THE)).c_str());
+               mprf("<1406>%s은(는) %s의 오라를 받아 강화되었다!",
+                    mon->name(DESC_PLAIN).c_str(),
+                    apostrophise(agent->name(DESC_PLAIN)).c_str());
             }
             mon_enchant ench = mon->get_ench(ENCH_EMPOWERED_SPELLS);
             if (ench.ench != ENCH_NONE)
@@ -3399,7 +3426,7 @@ static coord_def _mons_conjure_flame_pos(const monster &mons)
     const coord_def a = foe_pos - mon->pos();
     vector<coord_def> targets;
 
-    const int range = _mons_spell_range(*mon, SPELL_CONJURE_FLAME);
+    const int range = _mons_spell_range(SPELL_CONJURE_FLAME, *mon);
     for (distance_iterator di(mon->pos(), true, true, range); di; ++di)
     {
         // Our target needs to be in LOS, and we can't have a creature or
@@ -3559,7 +3586,7 @@ static coord_def _mons_ghostly_sacrifice_target(const monster &caster,
             tracer.friend_info.power += mi->get_experience_level() * 2;
 
         const int dam_fraction = _get_dam_fraction(tracer, dam_scale);
-        dprf("if sacrificing %s (at %d,%d): ratio %d/%d",
+        dprf("<1407>if sacrificing %s (at %d,%d): ratio %d/%d",
              mi->name(DESC_A, true).c_str(),
              best_target.x, best_target.y, dam_fraction, dam_scale);
         if (dam_fraction > best_dam_fraction)
@@ -3585,8 +3612,8 @@ static bool _prepare_ghostly_sacrifice(monster &caster, bolt &beam)
 
     if (you.see_cell(victim->pos()))
     {
-        mprf("%s animating energy erupts into ghostly fire!",
-             apostrophise(victim->name(DESC_THE)).c_str());
+        mprf("<1408>%s에게 생기를 주는 에너지가 유령화염 속으로 분출된다!",
+             apostrophise(victim->name(DESC_PLAIN)).c_str());
     }
     monster_die(*victim, &caster, true);
     return true;
@@ -3655,7 +3682,7 @@ static bool _worth_hexing(const monster &caster, spell_type spell)
     // We'll estimate the target's resistance to magic, by first getting
     // the actual value and then randomising it.
     const int est_magic_resist = foe->res_magic() + random2(60) - 30; // +-30
-    const int power = ench_power_stepdown(mons_spellpower(caster, spell));
+    const int power = ench_power_stepdown(_mons_spellpower(spell, caster));
 
     // Determine the amount of chance allowed by the benefit from
     // the spell. The estimated difficulty is the probability
@@ -3934,7 +3961,7 @@ static bool _target_and_justify_spell(monster &mons,
             break;
         case SPELL_DAZZLING_SPRAY:
             if (!mons.get_foe()
-                || !_spray_tracer(&mons, mons_spellpower(mons, spell),
+                || !_spray_tracer(&mons, _mons_spellpower(spell, mons),
                                   beem, spell))
             {
                 return false;
@@ -3953,7 +3980,7 @@ static bool _target_and_justify_spell(monster &mons,
     // Don't knockback something we're trying to constrict.
     const actor *victim = actor_at(beem.target);
     if (victim &&
-        beem.can_knockback(*victim)
+        beem.can_knockback(victim)
         && mons.is_constricting()
         && mons.constricting->count(victim->mid))
     {
@@ -4097,7 +4124,7 @@ bool handle_mon_spell(monster* mons)
         if (interference == DO_BLOCK_ATTACK)
         {
             const string message
-                = make_stringf(" begins to %s, but is stunned by your will!",
+                = make_stringf("<1409>은 %s의 사용을 시작했지만, 당신의 의지로 인해 기절했다!",
                                _ru_spell_stop_desc(*mons).c_str());
             simple_monster_message(*mons, message.c_str(), MSGCH_GOD);
             mons->lose_energy(EUT_SPELL);
@@ -4132,8 +4159,8 @@ bool handle_mon_spell(monster* mons)
 
             if (ignore_good_idea)
             {
-                mprf(MSGCH_GOD, "You redirect %s's attack!",
-                     mons->name(DESC_THE).c_str());
+                mprf(MSGCH_GOD, "<1410>당신은 %s의 공격을 되돌려보냈다!",
+                     mons->name(DESC_PLAIN).c_str());
             }
         }
     }
@@ -4155,7 +4182,7 @@ bool handle_mon_spell(monster* mons)
     {
         // This may be a bad idea -- if we decide monsters shouldn't
         // lose a turn like players do not, please make this just return.
-        simple_monster_message(*mons, " falters for a moment.");
+        simple_monster_message(*mons, "은(는) 잠시 비틀거렸다.");
         mons->lose_energy(EUT_SPELL);
         return true;
     }
@@ -4244,8 +4271,8 @@ static int _monster_abjure_target(monster* target, int pow, bool actual)
         pow = pow * (30 - target->get_hit_dice()) / 30;
         if (pow < duration)
         {
-            simple_god_message(" protects your fellow warrior from evil "
-                               "magic!");
+            simple_god_message("은(는) 동료전사를 사악한 마법으로 부터 "
+                               "보호했다!");
             shielded = true;
         }
     }
@@ -4254,14 +4281,14 @@ static int _monster_abjure_target(monster* target, int pow, bool actual)
         pow = pow / 2;
         if (pow < duration)
         {
-            simple_god_message(" shields your ally from puny magic!");
+            simple_god_message("은(는) 동료를 자그마한 마법으로부터 방어했다!");
             shielded = true;
         }
     }
     else if (is_sanctuary(target->pos()))
     {
         pow = 0;
-        mprf(MSGCH_GOD, "Zin's power protects your fellow warrior from evil magic!");
+        mprf(MSGCH_GOD, "진의 권능이 동료전사를 사악한 마법으로부터 보호했다!");
         shielded = true;
     }
 
@@ -4271,7 +4298,7 @@ static int _monster_abjure_target(monster* target, int pow, bool actual)
     if (!target->lose_ench_duration(abj, pow))
     {
         if (!shielded)
-            simple_monster_message(*target, " shudders.");
+            simple_monster_message(*target, "은(는) 떨었다.");
         return 1;
     }
 
@@ -4283,9 +4310,9 @@ static int _monster_abjuration(const monster* caster, bool actual)
     int maffected = 0;
 
     if (actual)
-        mpr("Send 'em back where they came from!");
+        mpr("그들은 왔던 곳으로 돌아갈지어다!");
 
-    const int pow = mons_spellpower(*caster, SPELL_ABJURATION);
+    const int pow = _mons_spellpower(SPELL_ABJURATION, *caster);
 
     for (monster_near_iterator mi(caster->pos(), LOS_NO_TRANS); mi; ++mi)
     {
@@ -4475,7 +4502,7 @@ static void _mons_vampiric_drain(monster &mons, mon_spell_slot slot, bolt&)
     if (grid_distance(mons.pos(), target->pos()) > 1)
         return;
 
-    const int pow = mons_spellpower(mons, slot.spell);
+    const int pow = _mons_spellpower(slot.spell, mons);
     int hp_cost = 3 + random2avg(9, 2) + 1 + random2(pow) / 7;
 
     hp_cost = min(hp_cost, target->stat_hp());
@@ -4486,7 +4513,7 @@ static void _mons_vampiric_drain(monster &mons, mon_spell_slot slot, bolt&)
     if (!hp_cost)
     {
         simple_monster_message(mons,
-                               " is infused with unholy energy, but nothing happens.",
+                               "은(는) 불경한 에너지를 주입받았지만, 아무 일도 일어나지 않았다.",
                                MSGCH_MONSTER_SPELL);
         return;
     }
@@ -4496,11 +4523,11 @@ static void _mons_vampiric_drain(monster &mons, mon_spell_slot slot, bolt&)
     if (you.can_see(mons))
     {
         simple_monster_message(mons,
-                               " is infused with unholy energy.",
+                               "은(는) 불경한 에너지를 주입받았다.",
                                MSGCH_MONSTER_SPELL);
     }
     else
-        mpr("Unholy energy fills the air.");
+        mpr("불경한 에너지가 대기를 뒤덮고 있다.");
 
     if (target->is_player())
     {
@@ -4508,7 +4535,7 @@ static void _mons_vampiric_drain(monster &mons, mon_spell_slot slot, bolt&)
         if (mons.heal(hp_cost * 2 / 3))
         {
             simple_monster_message(mons,
-                " draws life force from you and is healed!");
+                "은(는) 당신에게서 생명력을 끌어와서 치유되었다!");
         }
     }
     else
@@ -4519,13 +4546,13 @@ static void _mons_vampiric_drain(monster &mons, mon_spell_slot slot, bolt&)
         if (mtarget->is_summoned())
         {
             simple_monster_message(mons,
-                                   make_stringf(" draws life force from %s!",
+                                   make_stringf("<1411>은(는) %s에게서 생명력을 끌어왔다!",
                                                 targname.c_str()).c_str());
         }
         else if (mons.heal(hp_cost * 2 / 3))
         {
             simple_monster_message(mons,
-                make_stringf(" draws life force from %s and is healed!",
+                make_stringf("<1412>은(는) %s에게서 생명력을 끌어와서 치유되었다!",
                 targname.c_str()).c_str());
         }
         if (mtarget->alive())
@@ -4541,7 +4568,7 @@ static bool _mons_cast_freeze(monster* mons)
     if (grid_distance(mons->pos(), target->pos()) > 1)
         return false;
 
-    const int pow = mons_spellpower(*mons, SPELL_FREEZE);
+    const int pow = _mons_spellpower(SPELL_FREEZE, *mons);
 
     const int base_damage = roll_dice(1, 3 + pow / 6);
     int damage = 0;
@@ -4557,8 +4584,8 @@ static bool _mons_cast_freeze(monster* mons)
 
     if (you.can_see(*target))
     {
-        mprf("%s %s frozen.", target->name(DESC_THE).c_str(),
-                              target->conj_verb("are").c_str());
+        mprf("<1413>%s이(가) %s 얼어붙었다.", target->name(DESC_PLAIN).c_str(),
+                              target->conj_verb("").c_str());
     }
 
     target->hurt(mons, damage, BEAM_COLD, KILLED_BY_BEAM, "", "by Freeze");
@@ -4628,13 +4655,13 @@ static int _mons_mesmerise(monster* mons, bool actual)
     {
         if (!already_mesmerised)
         {
-            simple_monster_message(*mons, " attempts to bespell you!");
+            simple_monster_message(*mons, "이(가) 당신을 현혹하려 시도한다!");
             flash_view(UA_MONSTER, LIGHTMAGENTA);
         }
         else
         {
-            mprf("%s draws you further into %s thrall.",
-                    mons->name(DESC_THE).c_str(),
+            mprf("<1414>%s은(는) 당신을 %s의 노예로 이끈다.",
+                    mons->name(DESC_PLAIN).c_str(),
                     mons->pronoun(PRONOUN_POSSESSIVE).c_str());
         }
     }
@@ -4654,7 +4681,7 @@ static int _mons_mesmerise(monster* mons, bool actual)
             else if (you.duration[DUR_MESMERISE_IMMUNE] && !already_mesmerised)
                 canned_msg(MSG_YOU_RESIST);
             else
-                mprf("You%s", you.resist_margin_phrase(res_magic).c_str());
+                mprf("<1415>당신은%s", you.resist_margin_phrase(res_magic).c_str());
         }
 
         return 0;
@@ -4674,9 +4701,9 @@ static int _mons_cause_fear(monster* mons, bool actual)
     if (actual)
     {
         if (you.can_see(*mons))
-            simple_monster_message(*mons, " radiates an aura of fear!");
+            simple_monster_message(*mons, "이(가) 공포의 형상을 발산한다!");
         else if (you.see_cell(mons->pos()))
-            mpr("An aura of fear fills the air!");
+            mpr("공포의 기운이 대기를 뒤덮고 있다!");
     }
 
     int retval = -1;
@@ -4701,7 +4728,7 @@ static int _mons_cause_fear(monster* mons, bool actual)
             if (you.clarity())
                 canned_msg(MSG_YOU_UNAFFECTED);
             else if (res_margin > 0)
-                mprf("You%s", you.resist_margin_phrase(res_margin).c_str());
+                mprf("<1416>당신은%s", you.resist_margin_phrase(res_margin).c_str());
             else if (you.add_fearmonger(mons))
             {
                 retval = 1;
@@ -4752,7 +4779,7 @@ static int _mons_cause_fear(monster* mons, bool actual)
             retval = 1;
 
             if (you.can_see(**mi))
-                simple_monster_message(**mi, " looks frightened!");
+                simple_monster_message(**mi, "이(가) 무서워보인다!");
 
             behaviour_event(*mi, ME_SCARE, mons);
 
@@ -4783,7 +4810,7 @@ static int _mons_mass_confuse(monster* mons, bool actual)
         {
             const int res_magic = you.check_res_magic(pow);
             if (res_magic > 0)
-                mprf("You%s", you.resist_margin_phrase(res_magic).c_str());
+                mprf("<1417>당신%s", you.resist_margin_phrase(res_magic).c_str());
             else
             {
                 you.confuse(mons, 5 + random2(3));
@@ -4827,26 +4854,101 @@ static int _mons_mass_confuse(monster* mons, bool actual)
     return retval;
 }
 
+static int _mons_control_undead(monster* mons, bool actual)
+{
+    int retval = -1;
+
+    const int pow = _ench_power(SPELL_CONTROL_UNDEAD, *mons);
+
+    if (mons->see_cell_no_trans(you.pos())
+        && mons->can_see(you)
+        && !mons->wont_attack()
+        && you.holiness() & MH_UNDEAD)
+    {
+        retval = 0;
+
+        if (actual)
+        {
+            int res_margin = you.check_res_magic(pow);
+            if (res_margin > 0)
+                mprf("<1418>당신%s", you.resist_margin_phrase(res_margin).c_str());
+            else
+            {
+                enchant_actor_with_flavour(&you, mons, BEAM_ENSLAVE);
+                retval = 1;
+            }
+        }
+    }
+
+    enchant_type good = (mons->wont_attack()) ? ENCH_CHARM
+                                              : ENCH_HEXED;
+    enchant_type bad  = (mons->wont_attack()) ? ENCH_HEXED
+                                              : ENCH_CHARM;
+    for (monster_near_iterator mi(mons->pos(), LOS_NO_TRANS); mi; ++mi)
+    {
+        if (*mi == mons)
+            continue;
+
+        if (mons_immune_magic(**mi)
+            || mons_is_firewood(**mi)
+            || (mons_atts_aligned(mi->attitude, mons->attitude)
+                && !mi->has_ench(bad))
+            || !(mi->holiness() & MH_UNDEAD))
+        {
+            continue;
+        }
+
+        retval = max(retval, 0);
+
+        int res_margin = mi->check_res_magic(pow);
+        if (res_margin > 0)
+        {
+            if (actual)
+            {
+                simple_monster_message(**mi,
+                    mi->resist_margin_phrase(res_margin).c_str());
+            }
+            continue;
+        }
+        if (actual)
+        {
+            retval = 1;
+            if (you.can_see(**mi))
+            {
+                mprf("<1419>%s은(는) %s에게 복종했다!",
+                     mi->name(DESC_YOUR).c_str(),
+                     apostrophise(mons->name(DESC_PLAIN)).c_str());
+            }
+            if (mi->has_ench(bad))
+                mi->del_ench(bad);
+            else
+                mi->add_ench(mon_enchant(good, 0, mons));
+        }
+    }
+
+    return retval;
+}
+
 static coord_def _mons_fragment_target(const monster &mon)
 {
     coord_def target(GXM+1, GYM+1);
     const monster *mons = &mon; // TODO: rewriteme
-    const int pow = mons_spellpower(*mons, SPELL_LRD);
+    const int pow = _mons_spellpower(SPELL_LRD, *mons);
 
     // Shadow casting should try to affect the same tile as the player.
     if (mons_is_player_shadow(*mons))
     {
         bool temp;
         bolt beam;
-        if (!setup_fragmentation_beam(beam, pow, mons, mons->target, true,
-                                      nullptr, temp))
+        if (!setup_fragmentation_beam(beam, pow, mons, mons->target, false,
+                                      true, true, nullptr, temp, temp))
         {
             return target;
         }
         return mons->target;
     }
 
-    const int range = _mons_spell_range(*mons, SPELL_LRD);
+    const int range = _mons_spell_range(SPELL_LRD, *mons);
     int maxpower = 0;
     for (distance_iterator di(mons->pos(), true, true, range); di; ++di)
     {
@@ -4856,8 +4958,8 @@ static coord_def _mons_fragment_target(const monster &mon)
             continue;
 
         bolt beam;
-        if (!setup_fragmentation_beam(beam, pow, mons, *di, true, nullptr,
-                                      temp))
+        if (!setup_fragmentation_beam(beam, pow, mons, *di, false, true, true,
+                                      nullptr, temp, temp))
         {
             continue;
         }
@@ -4867,10 +4969,20 @@ static coord_def _mons_fragment_target(const monster &mon)
         if (!mons_should_fire(beam))
             continue;
 
-        if (beam.foe_info.count > 0
-            && beam.foe_info.power > maxpower)
+        bolt beam2;
+        if (!setup_fragmentation_beam(beam2, pow, mons, *di, false, false, true,
+                                      nullptr, temp, temp))
         {
-            maxpower = beam.foe_info.power;
+            continue;
+        }
+
+        beam2.range = range;
+        fire_tracer(mons, beam2, true);
+
+        if (beam2.foe_info.count > 0
+            && beam2.foe_info.power > maxpower)
+        {
+            maxpower = beam2.foe_info.power;
             target = *di;
         }
     }
@@ -4906,7 +5018,7 @@ static void _blink_allies_encircle(const monster* mon)
                 if (!(ally->flags & MF_WAS_IN_VIEW)
                     && ally->flags & MF_SEEN)
                 {
-                    simple_monster_message(*ally, " blinks into view!");
+                    simple_monster_message(*ally, "이(가) 시야에서 점멸한다!");
                 }
                 ally->behaviour = BEH_SEEK;
                 ally->foe = mon->foe;
@@ -5160,7 +5272,7 @@ static void _branch_summon_helper(monster* mons, spell_type spell_cast)
             which_branch = random2(list_size);
             break;
         default:
-            die("Unsupported branch summon spell %s!",
+            die("<1420>Unsupported branch summon spell %s!",
                  spell_title(spell_cast));
     }
     const int num_summons = random_range(1, 3);
@@ -5176,7 +5288,7 @@ static void _branch_summon_helper(monster* mons, spell_type spell_cast)
             msg += "!";
             mprf(mons->wont_attack() ? MSGCH_FRIEND_ENCHANT
                                      : MSGCH_MONSTER_ENCHANT,
-                 "%s", msg.c_str());
+                 "<1421>%s", msg.c_str());
         }
     }
 
@@ -5265,13 +5377,13 @@ void flay(const monster &caster, actor &defender, int damage)
     {
         if (was_flayed)
         {
-            mprf("Terrible wounds spread across more of %s body!",
-                 defender.name(DESC_ITS).c_str());
+            mprf("<1422>끔찍한 상처들이 %s 몸 전체에 더욱 퍼져나갔다!",
+                 defender.name(DESC_PLAIN).c_str());
         }
         else
         {
-            mprf("Terrible wounds open up all over %s body!",
-                 defender.name(DESC_ITS).c_str());
+            mprf("<1423>끔찍한 상처들이 %s의 몸 전체에서 터져나왔다!",
+                 defender.name(DESC_PLAIN).c_str());
         }
     }
 
@@ -5342,12 +5454,12 @@ static string _describe_nearby_constructs(const monster &caster, coord_def pos)
 
     const string name = nearby_constructs.back()->name(DESC_THE);
     if (nearby_constructs.size() == 1)
-        return make_stringf(" and %s", name.c_str());
+        return make_stringf("<1424> and %s", name.c_str());
 
     for (auto act : nearby_constructs)
         if (act->name(DESC_THE) != name)
             return " and the adjacent constructs";
-    return make_stringf(" and %s", pluralise_monster(name).c_str());
+    return make_stringf("<1425> and %s", pluralise_monster(name).c_str());
 }
 
 /// Cast Resonance Strike, blasting the caster's target with smitey damage.
@@ -5368,12 +5480,12 @@ static void _cast_resonance_strike(monster &caster, mon_spell_slot, bolt&)
 
     if (you.see_cell(target->pos()))
     {
-        mprf("A blast of power from the earth%s strikes %s!",
+        mprf("<1426>땅으로 부터의 %s의 힘의 폭발이 %s을(를) 강타했다!",
              constructs_desc.c_str(),
-             target->name(DESC_THE).c_str());
+             target->name(DESC_PLAIN).c_str());
     }
     target->hurt(&caster, dam, BEAM_MISSILE, KILLED_BY_BEAM,
-                 "", "by a resonance strike");
+                 "", "공명하는 일격에 의해");
 }
 
 static bool _spell_charged(monster *mons)
@@ -5395,14 +5507,14 @@ static bool _spell_charged(monster *mons)
         if (!you.can_see(*mons))
             return false;
         string msg =
-            getSpeakString(make_stringf("%s charge",
+            getSpeakString(make_stringf("<1427>%s charge",
                                         mons->name(DESC_PLAIN, true).c_str())
                            .c_str());
         if (!msg.empty())
         {
             msg = do_mon_str_replacements(msg, *mons);
             mprf(mons->wont_attack() ? MSGCH_FRIEND_ENCHANT
-                 : MSGCH_MONSTER_ENCHANT, "%s", msg.c_str());
+                 : MSGCH_MONSTER_ENCHANT, "<1428>%s", msg.c_str());
         }
         return false;
     }
@@ -5433,20 +5545,20 @@ static void _sheep_message(int num_sheep, int sleep_pow, actor& foe)
 
     // Determine messaging based on sleep strength.
     if (sleep_pow >= 125)
-        message = "You are overwhelmed by glittering dream dust!";
+        message = "당신은 반짝이는 꿈 가루에 휩싸였다!";
     else if (sleep_pow >= 75)
-        message = "The dream sheep are wreathed in dream dust.";
+        message = "꿈 양은 꿈 가루로 둘러싸여있다.";
     else if (sleep_pow >= MIN_DREAM_SUCCESS_POWER)
     {
-        message = make_stringf("The dream sheep shake%s wool and sparkle%s.",
-                               num_sheep == 1 ? "s its" : " their",
-                               num_sheep == 1 ? "s": "");
+        message = make_stringf("<1429>꿈 양은 %s털을 흔들어서 반짝였다%s.",
+                               num_sheep == 1 ? "그의 " : "그들의 ",
+                               num_sheep == 1 ? "": "");
     }
     else // if sleep fails
     {
-        message = make_stringf("The dream sheep ruffle%s wool and motes of "
-                               "dream dust sparkle, to no effect.",
-                               num_sheep == 1 ? "s its" : " their");
+        message = make_stringf("<1430>꿈 양이 %s털을 헝클어 반짝이는 꿈가루를 "
+                               "뿜었지만 효과가 없었다.",
+                               num_sheep == 1 ? "그의 " : "그들의 ");
     }
 
     // Messaging for non-player targets
@@ -5458,7 +5570,7 @@ static void _sheep_message(int num_sheep, int sleep_pow, actor& foe)
         {
             mprf(foe.as_monster()->friendly() ? MSGCH_FRIEND_SPELL
                                               : MSGCH_MONSTER_SPELL,
-                 "As the sheep sparkle%s and sway%s, %s falls asleep.",
+                 "<1431>양이 반짝%s 빛나고%s 흔들림으로서 %s은(는) 잠에 빠져들었다.",
                  pluralize,
                  pluralize,
                  foe_name.c_str());
@@ -5467,16 +5579,16 @@ static void _sheep_message(int num_sheep, int sleep_pow, actor& foe)
         {
             mprf(foe.as_monster()->friendly() ? MSGCH_FRIEND_SPELL
                                               : MSGCH_MONSTER_SPELL,
-                 "The dream sheep attempt%s to lull %s to sleep.",
+                 "<1432>꿈양은 %s : %s을(를) 안심시키기위해 노력했다.",
                  pluralize,
                  foe_name.c_str());
-            mprf("%s is unaffected.", foe_name.c_str());
+            mprf("<1433>%s은(는) 영향을 받지 않았다.", foe_name.c_str());
         }
     }
     else if (foe.is_player())
     {
-        mprf(MSGCH_MONSTER_SPELL, "%s%s", message.c_str(),
-             sleep_pow ? " You feel drowsy..." : "");
+        mprf(MSGCH_MONSTER_SPELL, "<1434>%s%s", message.c_str(),
+             sleep_pow ? " 나른한 기분이 들었다..." : "");
     }
 }
 
@@ -5627,39 +5739,6 @@ static void _mons_upheaval(monster& mons, actor& foe)
     }
 }
 
-static void _mons_tornado(monster *mons, bool is_vortex = false)
-{
-    const int dur = is_vortex ? 30 : 60;
-    const string desc = is_vortex ? "vortex" : "great vortex";
-    const string prop = is_vortex ? "vortex_since" : "tornado_since";
-    const enchant_type ench = is_vortex ? ENCH_VORTEX : ENCH_TORNADO;
-
-    if (you.can_see(*mons))
-    {
-        bool flying = mons->airborne();
-        mprf("A %s of raging winds appears %s%s%s!",
-             desc.c_str(),
-             flying ? "around " : "and lifts ",
-             mons->name(DESC_THE).c_str(),
-             flying ? "" : " up!");
-    }
-    else if (you.see_cell(mons->pos()))
-        mprf("A %s of raging winds appears out of thin air!", desc.c_str());
-
-    mons->props[prop.c_str()].get_int() = you.elapsed_time;
-    mon_enchant me(ench, 0, mons, dur);
-    mons->add_ench(me);
-
-    if (mons->has_ench(ENCH_FLIGHT))
-    {
-        mon_enchant me2 = mons->get_ench(ENCH_FLIGHT);
-        me2.duration = me.duration;
-        mons->update_ench(me2);
-    }
-    else
-        mons->add_ench(mon_enchant(ENCH_FLIGHT, 0, mons, dur));
-}
-
 /**
  *  Make this monster cast a spell
  *
@@ -5730,7 +5809,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     int sumcount2;
     int duration = 0;
 
-    dprf("Mon #%d casts %s (#%d)",
+    dprf("<1435>Mon #%d casts %s (#%d)",
          mons->mindex(), spell_title(spell_cast), spell_cast);
     ASSERT(!(flags & SPFLAG_TESTING));
     // Targeted spells need a valid target.
@@ -5766,7 +5845,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     }
 
     const god_type god = _find_god(*mons, slot_flags);
-    const int splpow = mons_spellpower(*mons, spell_cast);
+    const int splpow = _mons_spellpower(spell_cast, *mons);
 
     switch (spell_cast)
     {
@@ -5778,9 +5857,9 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         if (you.can_see(*foe))
         {
             if (foe->airborne())
-                mprf("The water rises up and strikes %s!", foe->name(DESC_THE).c_str());
+                mprf("<1436>물이 솟아 올라 %s을(를) 덮쳤다!", foe->name(DESC_PLAIN).c_str());
             else
-                mprf("The water swirls and strikes %s!", foe->name(DESC_THE).c_str());
+                mprf("<1437>물이 소용돌이치며 %s을(를) 강타했다!", foe->name(DESC_PLAIN).c_str());
         }
 
         pbolt.flavour    = BEAM_WATER;
@@ -5790,7 +5869,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         damage_taken = foe->apply_ac(damage_taken);
 
         foe->hurt(mons, damage_taken, BEAM_MISSILE, KILLED_BY_BEAM,
-                      "", "by the raging water");
+                      "", "몰아치는 물에 의해");
         return;
     }
 
@@ -5800,14 +5879,14 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         if (foe->is_player())
         {
             if (you.airborne())
-                mpr("The air twists around and violently strikes you in flight!");
+                mpr("대기가 비틀리더니, 비행중인 당신을 거칠게 강타했다!");
             else
-                mpr("The air twists around and strikes you!");
+                mpr("대기가 비틀리며 당신을 강타한다!");
         }
         else
         {
             simple_monster_message(*foe->as_monster(),
-                                   " is struck by the twisting air!");
+                                   "이(가) 비틀린 공기에 맞았다!");
         }
 
         pbolt.flavour = BEAM_AIR;
@@ -5830,26 +5909,26 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         if (one_chance_in(3)
             && lose_stat(STAT_INT, 1 + random2(3)))
         {
-            mpr("Something feeds on your intellect!");
+            mpr("무언가가 당신의 지능을 흡수하고 있다!");
             xom_is_stimulated(50);
         }
         else
-            mpr("Something tries to feed on your intellect!");
+            mpr("무언가가 당신의 지능을 흡수하려 하고 있다!");
         return;
 
     case SPELL_SUMMON_SPECTRAL_ORCS:
         if (foe->is_player())
-            mpr("Orcish apparitions take form around you.");
+            mpr("오크 형상의 유령들이 당신의 주위에서 생겨났다.");
         else
-            simple_monster_message(*foe->as_monster(), " is surrounded by Orcish apparitions.");
+            simple_monster_message(*foe->as_monster(), "이(가) 오크적인 환영에 둘러싸여있다.");
         _mons_cast_spectral_orcs(mons);
         return;
 
     case SPELL_HAUNT:
         if (foe->is_player())
-            mpr("You feel haunted.");
+            mpr("당신은 귀기를 느꼈다.");
         else
-            mpr("You sense an evil presence.");
+            mpr("당신은 악의의 접근을 알아차렸다.");
         _mons_cast_haunt(mons);
         return;
 
@@ -5865,8 +5944,8 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         {
             if (you.can_see(*foe))
             {
-                mprf("%s%s",
-                     foe->name(DESC_THE).c_str(),
+                mprf("<1438>%s이(가) %s",
+                     foe->name(DESC_PLAIN).c_str(),
                      foe->resist_margin_phrase(res_margin).c_str());
             }
             return;
@@ -5878,7 +5957,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
     case SPELL_MAJOR_HEALING:
         if (mons->heal(50 + random2avg(mons->spell_hd(spell_cast) * 10, 2)))
-            simple_monster_message(*mons, " is healed.");
+            simple_monster_message(*mons, "은(는) 치유되었다.");
         return;
 
     case SPELL_BERSERKER_RAGE:
@@ -5892,13 +5971,13 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 #endif
     case SPELL_SPRINT:
         mons->add_ench(ENCH_SWIFT);
-        simple_monster_message(*mons, " puts on a burst of speed!");
+        simple_monster_message(*mons, "은(는) 폭발적으로 속도를 올렸다!");
         return;
 
     case SPELL_SILENCE:
         mons->add_ench(ENCH_SILENCE);
         invalidate_agrid(true);
-        simple_monster_message(*mons, "'s surroundings become eerily quiet.");
+        simple_monster_message(*mons, "의 주위가 으스스하게 조용해지기 시작했다.");
         return;
 
     case SPELL_CALL_TIDE:
@@ -5911,7 +5990,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
             mons->props[TIDE_CALL_TURN].get_int() = you.num_turns;
             if (simple_monster_message(*
                     mons,
-                    " sings a water chant to call the tide!"))
+                    "은(는) 파도의 조수를 부르는 물의 성가를 불렀다!"))
             {
                 flash_view_delay(UA_MONSTER, ETC_WATER, 300);
             }
@@ -5926,7 +6005,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
         simple_monster_message(*
             mons,
-            " squirts a massive cloud of ink into the water!");
+            "은(는) 물에 거대한 잉크구름을 뿜어냈다!");
         return;
 
 #if TAG_MAJOR_VERSION == 34
@@ -6011,9 +6090,9 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
         if (you.can_see(*mons))
         {
-            mprf("%s shimmers and seems to become %s!", mons->name(DESC_THE).c_str(),
-                                                        sumcount2 == 1 ? "two"
-                                                                       : "three");
+            mprf("<1439>%s이(가) 어른거리더니 %s(으)로 보이기 시작했다!", mons->name(DESC_PLAIN).c_str(),
+                                                        sumcount2 == 1 ? "둘"
+                                                                       : "셋");
         }
 
         return;
@@ -6041,6 +6120,16 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         // elf corpse gives 4.5 HD.
         twisted_resurrection(mons, 500, SAME_ATTITUDE(mons),
                              mons->foe, god);
+        return;
+
+    case SPELL_CIGOTUVIS_EMBRACE:
+        harvest_corpses(*mons);
+        if (crawl_state.game_is_arena() || you.can_see(*mons))
+        {
+            mprf("<1440>죽은 자들의 육체가 %s을(를) 감싸 껍질을 형성했다.",
+                 mons->name(DESC_PLAIN).c_str());
+        }
+        mons->add_ench(ENCH_BONE_ARMOUR);
         return;
 
     case SPELL_CALL_IMP:
@@ -6128,7 +6217,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     case SPELL_MALIGN_GATEWAY:
         if (!can_cast_malign_gateway())
         {
-            dprf("ERROR: %s can't cast malign gateway, but is casting anyway! "
+            dprf("<1441>ERROR: %s can't cast malign gateway, but is casting anyway! "
                  "Counted %d gateways.", mons->name(DESC_THE).c_str(),
                  count_malign_gateways());
         }
@@ -6151,9 +6240,6 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         return;
     }
 
-#if TAG_MAJOR_VERSION == 34
-    case SPELL_CONTROL_UNDEAD:
-#endif
     case SPELL_SUMMON_UNDEAD:
         _do_high_level_summon(mons, spell_cast, _pick_undead_summon,
                               2 + random2(mons->spell_hd(spell_cast) / 5 + 1),
@@ -6258,13 +6344,28 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
     case SPELL_TORNADO:
     {
-        _mons_tornado(mons);
-        return;
-    }
-
-    case SPELL_VORTEX:
-    {
-        _mons_tornado(mons, true);
+        int dur = 60;
+        if (you.can_see(*mons))
+        {
+            bool flying = mons->airborne();
+            mprf("<1442>소용돌이치는 거대한 돌풍이 %s%s이(가)%s!",
+                 flying ? "나타났다" : "나타나고 ",
+                 mons->name(DESC_PLAIN).c_str(),
+                 flying ? "" : " 날아올랐다!");
+        }
+        else if (you.see_cell(mons->pos()))
+            mpr("맹렬한 소용돌이가 공기중에 나타났다!");
+        mons->props["tornado_since"].get_int() = you.elapsed_time;
+        mon_enchant me(ENCH_TORNADO, 0, mons, dur);
+        mons->add_ench(me);
+        if (mons->has_ench(ENCH_FLIGHT))
+        {
+            mon_enchant me2 = mons->get_ench(ENCH_FLIGHT);
+            me2.duration = me.duration;
+            mons->update_ench(me2);
+        }
+        else
+            mons->add_ench(mon_enchant(ENCH_FLIGHT, 0, mons, dur));
         return;
     }
 
@@ -6387,7 +6488,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
         if (sumcount)
         {
-            mpr("Walls emerge from the floor!");
+            mpr("바닥으로부터 벽이 솟아났다!");
 
             // XXX: Assume that the entombed monster can regenerate.
             // Also, base the regeneration rate on HD to avoid
@@ -6405,6 +6506,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     }
 
     case SPELL_CHAIN_LIGHTNING:
+    case SPELL_CHAIN_OF_CHAOS:
         cast_chain_spell(spell_cast, splpow, mons);
         return;
 
@@ -6449,8 +6551,8 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         {
             if (you.can_see(*mons))
             {
-                mprf("%s commands the forest to attack, but nothing happens.",
-                     mons->name(DESC_THE).c_str());
+                mprf("<1443>%s은(는) 숲에게 공격을 명령 했지만 아무일도 일어나지 않았다.",
+                     mons->name(DESC_PLAIN).c_str());
             }
             return;
         }
@@ -6462,7 +6564,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         env.forest_awoken_until = you.elapsed_time + duration;
 
         // You may be unable to see the monster, but notice an affected tree.
-        forest_message(mons->pos(), "The forest starts to sway and rumble!");
+        forest_message(mons->pos(), "숲이 흔들리고 웅웅거리기 시작한다!");
         return;
 
     case SPELL_SUMMON_DRAGON:
@@ -6496,7 +6598,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     case SPELL_REGENERATION:
     {
         simple_monster_message(*mons,
-                               "'s wounds begin to heal before your eyes!");
+                               "의 상처가 눈 앞에서 치유되기 시작한다!");
         const int dur = BASELINE_DELAY
             * min(5 + roll_dice(2, (mons->spell_hd(spell_cast) * 10) / 3 + 1), 100);
         mons->add_ench(mon_enchant(ENCH_REGENERATION, 0, mons, dur));
@@ -6507,8 +6609,8 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     {
         if (you.can_see(*mons))
         {
-            mprf("A film of ice covers %s body!",
-                 apostrophise(mons->name(DESC_THE)).c_str());
+            mprf("<1444>얼음으로 된 얇은 막이 %s의 몸을 감싼다!",
+                 apostrophise(mons->name(DESC_PLAIN)).c_str());
         }
         const int power = (mons->spell_hd(spell_cast) * 15) / 10;
         mons->add_ench(mon_enchant(ENCH_OZOCUBUS_ARMOUR,
@@ -6529,7 +6631,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     case SPELL_INJURY_BOND:
     {
         simple_monster_message(*mons,
-            make_stringf(" begins to accept %s allies' injuries.",
+            make_stringf("<1445>이(가) 동맹의 부상을 %s으로 받아들인다.",
                          mons->pronoun(PRONOUN_POSSESSIVE).c_str()).c_str());
         // FIXME: allies preservers vs the player
         for (monster_near_iterator mi(mons, LOS_NO_TRANS); mi; ++mi)
@@ -6562,9 +6664,9 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
 
     case SPELL_ENGLACIATION:
         if (you.can_see(*mons))
-            simple_monster_message(*mons, " radiates an aura of cold.");
+            simple_monster_message(*mons, "은(는) 냉기의 오라를 발산했다.");
         else if (mons->see_cell_no_trans(you.pos()))
-            mpr("A wave of cold passes over you.");
+            mpr("한기가 당신을 지나쳐갔다.");
         apply_area_visible([splpow, mons] (coord_def where) {
             return englaciate(where, min(splpow, 200), mons);
         }, mons->pos());
@@ -6603,8 +6705,40 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         return;
 
     case SPELL_DISCHARGE:
-        cast_discharge(min(200, splpow), *mons);
+    {
+        const int power = min(200, splpow);
+        const int num_targs = 1 + random2(random_range(1, 3) + power / 20);
+        const int dam =
+            apply_random_around_square([power, mons] (coord_def where) {
+                return discharge_monsters(where, power, mons);
+            }, mons->pos(), true, num_targs);
+
+        if (dam > 0)
+            scaled_delay(100);
+        else
+        {
+            if (!you.can_see(*mons))
+                mpr("당신은 부서지는 소리를 들었다.");
+            else if (coinflip())
+            {
+                mprf("<1446>%s의 주변의 대기가 전류 에너지로 파직거렸다.",
+                     mons->name(DESC_PLAIN).c_str());
+            }
+            else
+            {
+                const bool plural = coinflip();
+                mprf("<1447>%s 푸른 전하%s은(는) %s 무해하게 %s%s와 땅으로 흘렀다.",
+                     plural ? "약간의" : "",
+                     plural ? "들" : "",
+                     plural ? "저들끼리" : "그것들 끼리",
+                     plural ? "돌아다니며" : random_choose_weighted(2, "옆에서",
+                                                                1, "뒤에서",
+                                                                1, "앞에서"),
+                     mons->name(DESC_PLAIN).c_str());
+            }
+        }
         return;
+    }
 
     case SPELL_PORTAL_PROJECTILE:
     {
@@ -6653,7 +6787,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
                     && (you.can_see(*victim1)
                         || you.can_see(*victim2)))
                 {
-                    mpr("Some monsters swap places.");
+                    mpr("몇몇 몬스터들이 자리를 바꾸었다.");
                     did_message = true;
                 }
 
@@ -6671,9 +6805,9 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
     case SPELL_SHROUD_OF_GOLUBRIA:
         if (you.can_see(*mons))
         {
-            mprf("Space distorts along a thin shroud covering %s %s.",
-                 apostrophise(mons->name(DESC_THE)).c_str(),
-                 mons->is_insubstantial() ? "form" : "body");
+            mprf("<1448>%s의 %s 주위의 장막을 따라 공간이 일그러졌다.",
+                 apostrophise(mons->name(DESC_PLAIN)).c_str(),
+                 mons->is_insubstantial() ? "형상" : "몸");
         }
         mons->add_ench(mon_enchant(ENCH_SHROUD));
         return;
@@ -6719,7 +6853,7 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         {
             monster* targ = targets[random2(targets.size())];
             if (cast_phantom_mirror(mons, targ))
-                simple_monster_message(*targ, " shimmers and seems to become two!");
+                simple_monster_message(*targ, "이(가) 흐릿해지고는 두명처럼 보인다!");
         }
         return;
     }
@@ -6782,12 +6916,12 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         return;
 
     case SPELL_REPEL_MISSILES:
-        simple_monster_message(*mons, " begins repelling missiles!");
+        simple_monster_message(*mons, "은(는) 투사체 방어를 하기 시작했다!");
         mons->add_ench(mon_enchant(ENCH_REPEL_MISSILES));
         return;
 
     case SPELL_DEFLECT_MISSILES:
-        simple_monster_message(*mons, " begins deflecting missiles!");
+        simple_monster_message(*mons, "은(는) 투사체 저지를 하기 시작했다!");
         mons->add_ench(mon_enchant(ENCH_DEFLECT_MISSILES));
         return;
 
@@ -6806,8 +6940,12 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         return;
     }
 
+    case SPELL_CONTROL_UNDEAD:
+        _mons_control_undead(mons);
+        return;
+
     case SPELL_CLEANSING_FLAME:
-        simple_monster_message(*mons, " channels a blast of cleansing flame!");
+        simple_monster_message(*mons, "에게서 정화의 불길이 폭발적으로 흘러나온다!");
         cleansing_flame(5 + (5 * mons->spell_hd(spell_cast) / 12),
                         CLEANSING_FLAME_SPELL, mons->pos(), mons);
         return;
@@ -6838,13 +6976,13 @@ void mons_cast(monster* mons, bolt pbolt, spell_type spell_cast,
         return;
 
     case SPELL_AURA_OF_BRILLIANCE:
-        simple_monster_message(*mons, " begins emitting a brilliant aura!");
+        simple_monster_message(*mons, "은(는) 총명의 오라를 내뿜기 시작한다!");
         mons->add_ench(ENCH_BRILLIANCE_AURA);
         aura_of_brilliance(mons);
         return;
 
     case SPELL_BIND_SOULS:
-        simple_monster_message(*mons, " binds the souls of nearby monsters.");
+        simple_monster_message(*mons, "이(가) 근처에 있는 괴물의 영혼을 속박한다.");
         for (monster_near_iterator mi(mons, LOS_NO_TRANS); mi; ++mi)
         {
             if (*mi == mons)
@@ -6936,7 +7074,7 @@ static void _speech_keys(vector<string>& key_list,
                        + cast_str);
     if (wizard)
     {
-        key_list.push_back(make_stringf("%s %swizard%s",
+        key_list.push_back(make_stringf("<1449>%s %swizard%s",
                                spell_name.c_str(),
                                mon_shape_is_humanoid(shape) ? ""
                                                             : "non-humanoid ",
@@ -6974,7 +7112,7 @@ static void _speech_keys(vector<string>& key_list,
     // Last, generic wizard, priest or magical.
     if (wizard)
     {
-        key_list.push_back(make_stringf("%swizard%s",
+        key_list.push_back(make_stringf("<1450>%swizard%s",
                                mon_shape_is_humanoid(shape) ? ""
                                                             : "non-humanoid ",
                                cast_str.c_str()));
@@ -7015,7 +7153,7 @@ static string _speech_message(const vector<string>& key_list,
     for (const string &key : key_list)
     {
 #ifdef DEBUG_MONSPEAK
-        dprf(DIAG_SPEECH, "monster casting lookup: %s%s",
+        dprf(DIAG_SPEECH, "<1451>monster casting lookup: %s%s",
              prefix.c_str(), key.c_str());
 #endif
 
@@ -7447,13 +7585,13 @@ static void _throw_ally_to(const monster &thrower, monster &throwee,
     if (thrower_seen || throwee_seen)
     {
         const string destination = you.can_see(*foe) ?
-                                   make_stringf("at %s",
+                                   make_stringf("<1452>at %s",
                                                 foe->name(DESC_THE).c_str()) :
                                    "out of sight";
 
-        mprf("%s throws %s %s!",
-             (thrower_seen ? thrower.name(DESC_THE).c_str() : "Something"),
-             (throwee_seen ? throwee.name(DESC_THE, true).c_str() : "something"),
+        mprf("<1453>%s은(는) %s의 %s를 투척했다!",
+             (thrower_seen ? thrower.name(DESC_THE).c_str() : "무언가"),
+             (throwee_seen ? throwee.name(DESC_THE, true).c_str() : "무언가"),
              destination.c_str());
 
         bolt beam;
@@ -7475,7 +7613,7 @@ static void _throw_ally_to(const monster &thrower, monster &throwee,
     throwee.apply_location_effects(old_pos);
     throwee.check_redraw(old_pos);
 
-    const string killed_by = make_stringf("Hit by %s thrown by %s",
+    const string killed_by = make_stringf("<1454>Hit by %s thrown by %s",
                                           throwee.name(DESC_A, true).c_str(),
                                           thrower.name(DESC_PLAIN, true).c_str());
     const int dam = foe->apply_ac(random2(thrower.get_hit_dice() * 2));
@@ -7564,9 +7702,9 @@ static bool _should_siren_sing(monster* mons, bool avatar)
  */
 static void _doom_howl(monster &mon)
 {
-    mprf("%s unleashes a %s howl, and it begins to echo in your mind!",
-         mon.name(DESC_THE).c_str(),
-         silenced(mon.pos()) ? "silent" : "terrible");
+    mprf("<1455>%s 목놓아서 %s 짖었고, 그 울음은 당신의 마음 속에서 울리기 시작했다!",
+         mon.name(DESC_PLAIN).c_str(),
+         silenced(mon.pos()) ? "조용히" : "끔찍하게");
     you.duration[DUR_DOOM_HOWL] = random_range(120, 180);
     mon.props[DOOM_HOUND_HOWLED_KEY] = true;
 }
@@ -7594,7 +7732,7 @@ static void _mons_awaken_earth(monster &mon, const coord_def &target)
     for (fair_adjacent_iterator ai(target, false); ai; ++ai)
     {
         if (!_feat_is_awakenable(grd(*ai))
-            || env.markers.property_at(*ai, MAT_ANY, "veto_dig")
+            || env.markers.property_at(*ai, MAT_ANY, "veto_disintegrate")
                == "veto")
         {
             continue;
@@ -7618,12 +7756,12 @@ static void _mons_awaken_earth(monster &mon, const coord_def &target)
     if (seen)
     {
         noisy(20, target);
-        mprf("Some walls %s!",
-             count > 0 ? "begin to move on their own"
-                       : "crumble away");
+        mprf("<1456>일부 벽들이 %s!",
+             count > 0 ? "자기들 끼리 움직이기 시작했다"
+                       : "무너져 사라졌다");
     }
     else
-        noisy(20, target, "You hear rumbling.");
+        noisy(20, target, "당신은 우르릉 하는 소리를 들었다.");
 
     if (!seen && !count && you.can_see(mon))
         canned_msg(MSG_NOTHING_HAPPENS);
@@ -7648,17 +7786,17 @@ static void _siren_sing(monster* mons, bool avatar)
 
     if (you.can_see(*mons))
     {
-        const char * const song_adj = already_mesmerised ? "its luring"
-                                                         : "a haunting";
-        const string song_desc = make_stringf(" chants %s song.", song_adj);
+        const char * const song_adj = already_mesmerised ? "그것은 유혹하는"
+                                                         : "홀리는 듯 한";
+        const string song_desc = make_stringf("<1457>%s 노래를 부른다.", song_adj);
         simple_monster_message(*mons, song_desc.c_str(), spl);
     }
     else
     {
-        mprf(MSGCH_SOUND, "You hear %s.",
-                          already_mesmerised ? "a luring song" :
-                          coinflip()         ? "a haunting song"
-                                             : "an eerie melody");
+        mprf(MSGCH_SOUND, "<1458>당신은 %s을(를) 들었다.",
+                          already_mesmerised ? "유혹하는 노래" :
+                          coinflip()         ? "뇌리에 박히는"
+                                             : "으스스한 선율");
 
         // If you're already mesmerised by an invisible siren, it
         // can still prolong the enchantment.
@@ -7680,7 +7818,7 @@ static void _siren_sing(monster* mons, bool avatar)
         else if (you.duration[DUR_MESMERISE_IMMUNE] && !already_mesmerised)
             canned_msg(MSG_YOU_RESIST);
         else
-            mprf("You%s", you.resist_margin_phrase(res_magic).c_str());
+            mprf("<1459>당신은 %s", you.resist_margin_phrase(res_magic).c_str());
         return;
     }
 
@@ -7781,9 +7919,7 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
     case SPELL_BLINK_RANGE:
     case SPELL_BLINK_AWAY:
         // Prefer to keep a tornado going rather than blink.
-        return mon->no_tele(true, false)
-               || mon->has_ench(ENCH_TORNADO)
-               || mon->has_ench(ENCH_VORTEX);
+        return mon->no_tele(true, false) || mon->has_ench(ENCH_TORNADO);
 
     case SPELL_BLINK_OTHER:
     case SPELL_BLINK_OTHER_CLOSE:
@@ -7883,11 +8019,13 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
     case SPELL_SUMMON_SPECTRAL_ORCS:
     case SPELL_SUMMON_MUSHROOMS:
     case SPELL_ENTROPIC_WEAVE:
-    case SPELL_AIRSTRIKE:
         return !foe;
 
     case SPELL_HOLY_FLAMES:
         return !foe || no_clouds;
+
+    case SPELL_AIRSTRIKE:
+        return !foe || foe->res_wind();
 
     case SPELL_FREEZE:
         return !foe || !adjacent(mon->pos(), foe->pos());
@@ -7958,7 +8096,6 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
         return true;
 
     case SPELL_THROW_BARBS:
-    case SPELL_HARPOON_SHOT:
         // Don't fire barbs in melee range.
         return !foe || adjacent(mon->pos(), foe->pos());
 
@@ -7985,6 +8122,13 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
 
         return !twisted_resurrection(mon, 500, SAME_ATTITUDE(mon), mon->foe,
                                      mon->god, false);
+
+    case SPELL_CIGOTUVIS_EMBRACE:
+        if (friendly && !_animate_dead_okay(monspell))
+            return true;
+        if (mon->has_ench(ENCH_BONE_ARMOUR))
+            return true;
+        return !harvest_corpses(*mon, true);
 
     //XXX: unify with the other SPELL_FOO_OTHER spells?
     case SPELL_BERSERK_OTHER:
@@ -8017,6 +8161,8 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
     case SPELL_CHAIN_LIGHTNING:
         return !_trace_los(mon, _elec_vulnerable)
                 || you.visible_to(mon) && friendly; // don't zap player
+    case SPELL_CHAIN_OF_CHAOS:
+        return !_trace_los(mon, _dummy_vulnerable);
     case SPELL_CORRUPTING_PULSE:
         return !_trace_los(mon, _mutation_vulnerable)
                || you.visible_to(mon)
@@ -8027,13 +8173,6 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
                || !_trace_los(mon, _tornado_vulnerable)
                || you.visible_to(mon) && friendly // don't cast near the player
                   && !(mon->holiness() & MH_DEMONIC); // demons are rude
-
-    case SPELL_VORTEX:
-        return mon->has_ench(ENCH_VORTEX)
-               || mon->has_ench(ENCH_VORTEX_COOLDOWN)
-               || !_trace_los(mon, _tornado_vulnerable)
-               || you.visible_to(mon) && friendly
-                  && !(mon->holiness() & MH_DEMONIC);
 
     case SPELL_ENGLACIATION:
         return !foe
@@ -8048,12 +8187,12 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
 
     case SPELL_GLACIATE:
         return !foe
-               || !_glaciate_tracer(mon, mons_spellpower(*mon, monspell),
+               || !_glaciate_tracer(mon, _mons_spellpower(monspell, *mon),
                                     foe->pos());
 
     case SPELL_CLOUD_CONE:
         return !foe || no_clouds
-               || !mons_should_cloud_cone(mon, mons_spellpower(*mon, monspell),
+               || !mons_should_cloud_cone(mon, _mons_spellpower(monspell, *mon),
                                           foe->pos());
 
     case SPELL_MALIGN_GATEWAY:
@@ -8074,9 +8213,12 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
     case SPELL_CONFUSION_GAZE:
         return !foe || !mon->can_see(*foe);
 
+    case SPELL_CONTROL_UNDEAD:
+        return _mons_control_undead(mon, false) < 0;
+
     case SPELL_SCATTERSHOT:
         return !foe
-               || !scattershot_tracer(mon, mons_spellpower(*mon, monspell),
+               || !scattershot_tracer(mon, _mons_spellpower(monspell, *mon),
                                       foe->pos());
 
     case SPELL_CLEANSING_FLAME:
@@ -8156,7 +8298,6 @@ static bool _ms_waste_of_time(monster* mon, mon_spell_slot slot)
     case SPELL_CONTROL_WINDS:
     case SPELL_DEATHS_DOOR:
     case SPELL_FULMINANT_PRISM:
-    case SPELL_CONTROL_UNDEAD:
 #endif
     case SPELL_NO_SPELL:
         return true;

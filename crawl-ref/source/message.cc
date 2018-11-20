@@ -25,7 +25,6 @@
 #include "notes.h"
 #include "output.h"
 #include "religion.h"
-#include "scroller.h"
 #include "sound.h"
 #include "state.h"
 #include "stringutil.h"
@@ -48,8 +47,6 @@ void mpr_nojoin(msg_channel_type channel, string text)
 
 static bool _ends_in_punctuation(const string& text)
 {
-    if (text.size() == 0)
-        return false;
     switch (text[text.size() - 1])
     {
     case '.':
@@ -218,7 +215,7 @@ struct message_line
         {
             if (!text.empty())
             {
-                text += make_stringf("<lightgrey>%s </lightgrey>",
+                text += make_stringf("<1334><lightgrey>%s </lightgrey>",
                                      needs_semicolon ? ";" : "");
             }
             text += msg.with_repeats();
@@ -799,8 +796,7 @@ public:
         // of space and have to display --more-- instead
         unwind_bool dontsend(send_ignore_one, true);
 #endif
-        if (crawl_state.io_inited && crawl_state.game_started)
-            msgwin.add_item(msg.full_text(), p, _temporary);
+        msgwin.add_item(msg.full_text(), p, _temporary);
     }
 
     void roll_back()
@@ -869,9 +865,6 @@ public:
         prev_msg = message_line();
         last_of_turn = false;
         temp = 0;
-#ifdef USE_TILE_WEB
-        unsent = 0;
-#endif
     }
 
 #ifdef USE_TILE_WEB
@@ -908,11 +901,10 @@ bool _more = false, _last_more = false;
 
 void webtiles_send_messages()
 {
-    // defer sending any messages to client in this form until a game is
-    // started up. It's still possible to send them as a popup. When this is
-    // eventually called, it'll send any queued messages.
-    if (!crawl_state.io_inited || !crawl_state.game_started)
-        return;
+    webtiles_send_last_messages(0);
+}
+void webtiles_send_last_messages(int n)
+{
     tiles.json_open_object();
     tiles.json_write_string("msg", "msgs");
     tiles.json_treat_as_empty();
@@ -927,6 +919,7 @@ void webtiles_send_messages()
 }
 #else
 void webtiles_send_messages() { }
+void webtiles_send_last_messages(int n) { }
 #endif
 
 static FILE* _msg_dump_file = nullptr;
@@ -1107,7 +1100,7 @@ int channel_to_colour(msg_channel_type channel, int param)
     return colour_msg(channel_to_msgcol(channel, param));
 }
 
-void do_message_print(msg_channel_type channel, int param, bool cap,
+static void do_message_print(msg_channel_type channel, int param, bool cap,
                              bool nojoin, const char *format, va_list argp)
 {
     va_list ap;
@@ -1269,7 +1262,7 @@ static void _debug_channel_arena(msg_channel_type channel)
     case MSGCH_EXAMINE_FILTER:
     case MSGCH_ORB:
     case MSGCH_TUTORIAL:
-        die("Invalid channel '%s' in arena mode",
+        die("<1335>Invalid channel '%s' in arena mode",
                  channel_to_str(channel).c_str());
         break;
     default:
@@ -1330,13 +1323,6 @@ void msgwin_set_temporary(bool temp)
     }
 }
 
-bool msgwin_errors_to_stderr()
-{
-    return crawl_state.test || crawl_state.script
-            || crawl_state.build_db
-            || crawl_state.map_stat_gen || crawl_state.obj_stat_gen;
-}
-
 void msgwin_clear_temporary()
 {
     buffer.roll_back();
@@ -1349,7 +1335,7 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
                  bool cap)
 {
     if (_msg_dump_file != nullptr)
-        fprintf(_msg_dump_file, "%s\n", text.c_str());
+        fprintf(_msg_dump_file, "<1336>%s\n", text.c_str());
 
     if (crawl_state.game_crashed)
         return;
@@ -1359,18 +1345,19 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 
 #ifdef DEBUG_FATAL
     if (channel == MSGCH_ERROR)
-        die_noline("%s", text.c_str());
+        die_noline("<1337>%s", text.c_str());
 #endif
 
-    if (channel == MSGCH_ERROR &&
-        (!crawl_state.io_inited || msgwin_errors_to_stderr()))
+    if (!crawl_state.io_inited)
     {
-        fprintf(stderr, "%s\n", text.c_str());
+        if (channel == MSGCH_ERROR)
+            fprintf(stderr, "<1338>%s\n", text.c_str());
+        return;
     }
 
     // Flush out any "comes into view" monster announcements before the
     // monster has a chance to give any other messages.
-    if (!_updating_view && crawl_state.io_inited)
+    if (!_updating_view)
     {
         _updating_view = true;
         flush_comes_into_view();
@@ -1386,7 +1373,7 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 
     msg_colour_type colour = prepare_message(text, channel, param);
 
-    if (colour == MSGCOL_MUTED && crawl_state.io_inited)
+    if (colour == MSGCOL_MUTED)
     {
         if (channel == MSGCH_PROMPT)
             msgwin.show();
@@ -1403,8 +1390,6 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
     text = "<" + col + ">" + text + "</" + col + ">"; // XXX
 
     formatted_string fs = formatted_string::parse_string(text);
-
-    // TODO: this kind of check doesn't really belong in logging code...
     if (you.duration[DUR_QUAD_DAMAGE])
         fs.all_caps(); // No sound, so we simulate the reverb with all caps.
     else if (cap)
@@ -1415,10 +1400,6 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 
     message_line msg = message_line(text, channel, param, join);
     buffer.add(msg);
-
-    if (!crawl_state.io_inited)
-        return;
-
     _last_msg_turn = msg.turn;
 
     if (channel == MSGCH_ERROR)
@@ -1429,7 +1410,6 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 
     if (domore)
         more(true);
-
     if (do_flash_screen)
         flash_view_delay(UA_ALWAYS_ON, YELLOW, 50);
 
@@ -1437,7 +1417,7 @@ static void _mpr(string text, msg_channel_type channel, int param, bool nojoin,
 
 static string show_prompt(string prompt)
 {
-    mprf(MSGCH_PROMPT, "%s", prompt.c_str());
+    mprf(MSGCH_PROMPT, "<1339>%s", prompt.c_str());
 
     // FIXME: duplicating mpr code.
     msg_colour_type colour = prepare_message(prompt, MSGCH_PROMPT, 0);
@@ -1456,7 +1436,7 @@ void msgwin_reply(string reply)
     msgwin_clear_temporary();
     msgwin_set_temporary(false);
     reply = replace_all(reply, "<", "<<");
-    mprf(MSGCH_PROMPT, "%s<lightgrey>%s</lightgrey>", _prompt.c_str(), reply.c_str());
+    mprf(MSGCH_PROMPT, "<1340>%s<lightgrey>%s</lightgrey>", _prompt.c_str(), reply.c_str());
     msgwin.got_input();
 }
 
@@ -1468,68 +1448,11 @@ void msgwin_got_input()
 int msgwin_get_line(string prompt, char *buf, int len,
                     input_history *mh, const string &fill)
 {
-#ifdef TOUCH_UI
-    bool use_popup = true;
-#else
-    bool use_popup = !crawl_state.need_save || ui::has_layout();
-#endif
+    if (prompt != "")
+        msgwin_prompt(prompt);
 
-    int ret;
-    if (use_popup)
-    {
-        mouse_control mc(MOUSE_MODE_PROMPT);
-        resumable_line_reader reader(buf, len);
-        reader.set_input_history(mh);
-        reader.read_line(fill);
-        reader.putkey(CK_END);
-
-        linebreak_string(prompt, 79);
-        msg_colour_type colour = prepare_message(prompt, MSGCH_PROMPT, 0);
-        const string colour_prompt = colour_string(prompt, colour_msg(colour));
-
-        bool done = false;
-        auto text = make_shared<ui::Text>();
-        auto popup = make_shared<ui::Popup>(text);
-        auto update_text = [&]() {
-            formatted_string p = formatted_string::parse_string(colour_prompt);
-            p.cprintf("\n\n%s", reader.get_text().c_str());
-            text->set_text(p);
-#ifdef USE_TILE_WEB
-            tiles.json_open_object();
-            tiles.json_write_string("text", reader.get_text().c_str());
-            tiles.ui_state_change("msgwin-get-line", 0);
-#endif
-        };
-        popup->on(ui::Widget::slots.event, [&](wm_event ev) {
-            if (ev.type != WME_KEYDOWN)
-                return false;
-            ret = reader.putkey(ev.key.keysym.sym);
-            if (ret != -1)
-                done = true;
-            update_text();
-            return true;
-        });
-
-#ifdef USE_TILE_WEB
-        tiles.json_open_object();
-        tiles.json_write_string("prompt", colour_prompt);
-        tiles.json_write_string("text", fill);
-        tiles.push_ui_layout("msgwin-get-line", 1);
-#endif
-        update_text();
-        ui::run_layout(move(popup), done);
-#ifdef USE_TILE_WEB
-    tiles.pop_ui_layout();
-#endif
-    }
-    else
-    {
-        if (!prompt.empty())
-            msgwin_prompt(prompt);
-        ret = cancellable_get_line(buf, len, mh, nullptr, fill);
-        msgwin_reply(buf);
-    }
-
+    int ret = cancellable_get_line(buf, len, mh, nullptr, fill);
+    msgwin_reply(buf);
     return ret;
 }
 
@@ -1629,7 +1552,7 @@ static msg_colour_type prepare_message(const string& imsg,
     if (suppress_messages)
         return MSGCOL_MUTED;
 
-    if (you.num_turns > 0 && silenced(you.pos())
+    if (silenced(you.pos())
         && (channel == MSGCH_SOUND || channel == MSGCH_TALK))
     {
         return MSGCOL_MUTED;
@@ -1763,146 +1686,142 @@ void canned_msg(canned_message_type which_message)
     switch (which_message)
     {
         case MSG_SOMETHING_APPEARS:
-            mprf("Something appears %s!",
-                 player_has_feet() ? "at your feet" : "before you");
+            mprf("<1341>무엇인가 %s 나타났다!",
+                 player_has_feet() ? "당신의 발 밑에" : "당신 앞에");
             break;
         case MSG_NOTHING_HAPPENS:
-            mpr("Nothing appears to happen.");
+            mpr("아무 일도 일어나지 않았다.");
             break;
         case MSG_YOU_UNAFFECTED:
-            mpr("You are unaffected.");
+            mpr("당신은 아무 영향도 받지 않았다.");
             break;
         case MSG_YOU_RESIST:
-            mpr("You resist.");
+            mpr("당신은 저항했다.");
             learned_something_new(HINT_YOU_RESIST);
             break;
         case MSG_YOU_PARTIALLY_RESIST:
-            mpr("You partially resist.");
+            mpr("당신은 일부 저항했다.");
             break;
         case MSG_TOO_BERSERK:
-            mpr("You are too berserk!");
+            mpr("당신은 너무 광폭해져있다!");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_TOO_CONFUSED:
-            mpr("You're too confused!");
+            mpr("당신은 매우 혼란스럽다!");
             break;
         case MSG_PRESENT_FORM:
-            mpr("You can't do that in your present form.");
+            mpr("당신의 지금 모습으로는 그 행동을 할 수 없다.");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_NOTHING_CARRIED:
-            mpr("You aren't carrying anything.");
+            mpr("당신은 아무것도 가지고 있지 않다.");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_CANNOT_DO_YET:
-            mpr("You can't do that yet.");
+            mpr("당신은 아직 그것을 할 수 없다.");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_OK:
-            mprf(MSGCH_PROMPT, "Okay, then.");
+            mprf(MSGCH_PROMPT, "알았다, 그럼.");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_UNTHINKING_ACT:
-            mpr("Why would you want to do that?");
+            mpr("왜 그런 짓을 하려고 하는가?");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_NOTHING_THERE:
-            mpr("There's nothing there!");
+            mpr("거기엔 아무 것도 없다!");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_NOTHING_CLOSE_ENOUGH:
-            mpr("There's nothing close enough!");
+            mpr("그 행동을 할만큼 가까운 것이 없다!");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_NO_ENERGY:
-            mpr("You don't have the energy to cast that spell.");
+            mpr("그 주문을 시전하기에는 당신의 마력이 충분하지 못하다.");
             // included in default force_more_message
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_SPELL_FIZZLES:
-            mpr("The spell fizzles.");
+            mpr("주문이 흐지부지되었다.");
             break;
         case MSG_HUH:
-            mprf(MSGCH_EXAMINE_FILTER, "Huh?");
+            mprf(MSGCH_EXAMINE_FILTER, "뭐?");
             crawl_state.cancel_cmd_repeat();
             break;
         case MSG_EMPTY_HANDED_ALREADY:
         case MSG_EMPTY_HANDED_NOW:
         {
             const char* when =
-            (which_message == MSG_EMPTY_HANDED_ALREADY ? "already" : "now");
+            (which_message == MSG_EMPTY_HANDED_ALREADY ? "이미" : "지금");
             if (you.species == SP_FELID)
-                mprf("Your mouth is %s empty.", when);
+                mprf("<1342>당신의 입은 %s 비어있다.", when);
             else if (you.has_usable_claws(true))
-                mprf("You are %s empty-clawed.", when);
+                mprf("<1343>당신의 손톱은 %s 비어있다.", when);
             else if (you.has_usable_tentacles(true))
-                mprf("You are %s empty-tentacled.", when);
+                mprf("<1344>당신의 촉수는 %s 비어있다.", when);
             else
-                mprf("You are %s empty-handed.", when);
+                mprf("<1345>당신의 손은 %s 비어있다.", when);
             break;
         }
         case MSG_YOU_BLINK:
-            mpr("You blink.");
+            mpr("당신은 순간이동했다.");
             break;
         case MSG_STRANGE_STASIS:
-            mpr("You feel a strange sense of stasis.");
+            mpr("당신은 기묘한 정체의 기운을 느꼈다.");
             break;
         case MSG_NO_SPELLS:
-            mpr("You don't know any spells.");
+            mpr("당신은 아무 주문도 알지 못한다.");
             break;
         case MSG_MANA_INCREASE:
-            mpr("You feel your magic capacity increase.");
+            mpr("당신의 마법 수용량이 증가한 것이 느껴졌다.");
             break;
         case MSG_MANA_DECREASE:
-            mpr("You feel your magic capacity decrease.");
+            mpr("당신의 마법 수용량이 줄어든 것이 느껴졌다.");
             break;
         case MSG_DISORIENTED:
-            mpr("You feel momentarily disoriented.");
+            mpr("당신은 순간적으로 혼란에 빠졌다.");
             break;
         case MSG_TOO_HUNGRY:
-            mpr("You're too hungry.");
+            mpr("당신은 너무 배고프다.");
             break;
         case MSG_DETECT_NOTHING:
-            mpr("You detect nothing.");
+            mpr("당신은 아무것도 감지하지 못했다.");
             break;
         case MSG_CALL_DEAD:
-            mpr("You call on the dead to rise...");
+            mpr("당신은 죽은 자들을 일으켰다...");
             break;
         case MSG_ANIMATE_REMAINS:
-            mpr("You attempt to give life to the dead...");
+            mpr("당신은 죽은 자에게 생명을 부여했다...");
             break;
         case MSG_CANNOT_MOVE:
-            mpr("You cannot move.");
+            mpr("당신은 움직일 수 없다.");
             break;
         case MSG_YOU_DIE:
-            mpr_nojoin(MSGCH_PLAIN, "You die...");
+            mpr_nojoin(MSGCH_PLAIN, "죽었다...");
             break;
         case MSG_GHOSTLY_OUTLINE:
-            mpr("You see a ghostly outline there, and the spell fizzles.");
+            mpr("당신은 귀신같은 형체를 보았고, 주문은 흐지부지되었다.");
             break;
         case MSG_FULL_HEALTH:
-            mpr("Your health is already full.");
+            mpr("당신의 체력은 이미 모두 회복된 상태다.");
             break;
         case MSG_FULL_MAGIC:
-            mpr("Your reserves of magic are already full.");
+            mpr("당신의 마력은 이미 모두 회복된 상태다.");
             break;
         case MSG_GAIN_HEALTH:
-            mpr("You feel better.");
+            mpr("당신의 기분이 나아졌다.");
             break;
         case MSG_GAIN_MAGIC:
-            mpr("You feel your power returning.");
+            mpr("당신의 힘이 돌아오는 것이 느껴졌다.");
             break;
         case MSG_MAGIC_DRAIN:
-            mprf(MSGCH_WARN, "You suddenly feel drained of magical energy!");
+            mprf(MSGCH_WARN, "당신은 갑자기 마력이 빠져나가는 것을 느꼈다!");
             break;
         case MSG_SOMETHING_IN_WAY:
-            mpr("There's something in the way.");
-            break;
+            mpr("이동경로에 무언가가 있다.");
         case MSG_CANNOT_SEE:
-            mpr("You can't see that place.");
-            break;
-        case MSG_GOD_DECLINES:
-            mpr("Your god isn't willing to do this for you now.");
+            mpr("당신은 그 장소를 볼 수 없다.");
             break;
     }
 }
@@ -1926,7 +1845,7 @@ bool simple_monster_message(const monster& mons, const char *event,
         if (channel == MSGCH_PLAIN && mons.wont_attack())
             channel = MSGCH_FRIEND_ACTION;
 
-        mprf(channel, param, "%s", msg.c_str());
+        mprf(channel, param, "<1346>%s", msg.c_str());
         return true;
     }
 
@@ -1979,11 +1898,7 @@ string get_last_messages(int mcount, bool full)
         if (!msg)
             break;
         if (full || is_channel_dumpworthy(msg.channel))
-        {
-            string line = msg.pure_text_with_repeats();
-            string wrapped = wordwrap_line(line, 79, false, true);
-            text = wrapped + "\n" + text;
-        }
+            text = msg.pure_text_with_repeats() + "\n" + text;
         mcount--;
     }
 
@@ -2008,25 +1923,6 @@ void get_recent_messages(vector<string> &mess,
         mess.push_back(msg.pure_text_with_repeats());
         chan.push_back(msg.channel);
     }
-}
-
-bool recent_error_messages()
-{
-    // TODO: track whether player has seen error messages so this can be
-    // more generally useful?
-    flush_prev_message();
-
-    const store_t& msgs = buffer.get_store();
-    int mcount = NUM_STORED_MESSAGES;
-    for (int i = -1; mcount > 0; --i, --mcount)
-    {
-        const message_line msg = msgs[i];
-        if (!msg)
-            break;
-        if (msg.channel == MSGCH_ERROR)
-            return true;
-    }
-    return false;
 }
 
 // We just write out the whole message store including empty/unused
@@ -2076,57 +1972,35 @@ void load_messages(reader& inf)
     clear_messages(); // check for Options.message_clear
 }
 
-static void _replay_messages_core(formatted_scroller &hist)
+void replay_messages()
 {
-    flush_prev_message();
+    formatted_scroller hist(MF_START_AT_END | MF_ALWAYS_SHOW_MORE, "");
+    hist.set_more();
 
     const store_t msgs = buffer.get_store();
-    formatted_string lines;
     for (int i = 0; i < msgs.size(); ++i)
         if (channel_message_history(msgs[i].channel))
         {
             string text = msgs[i].full_text();
             linebreak_string(text, cgetsize(GOTO_CRT).x - 1);
             vector<formatted_string> parts;
-            formatted_string::parse_string_to_multiple(text, parts, 80);
+            formatted_string::parse_string_to_multiple(text, parts);
             for (unsigned int j = 0; j < parts.size(); ++j)
             {
+                formatted_string line;
                 prefix_type p = prefix_type::none;
                 if (j == parts.size() - 1 && i + 1 < msgs.size()
                     && msgs[i+1].turn > msgs[i].turn)
                 {
                     p = prefix_type::turn_end;
                 }
-                if (!lines.empty())
-                    lines.add_glyph('\n');
-                lines.add_glyph(_prefix_glyph(p));
-                lines += parts[j];
+                line.add_glyph(_prefix_glyph(p));
+                line += parts[j];
+                hist.add_item_formatted_string(line);
             }
         }
 
-    hist.add_formatted_string(lines, !lines.empty());
     hist.show();
-}
-
-void replay_messages()
-{
-    formatted_scroller hist(FS_START_AT_END | FS_PREWRAPPED_TEXT);
-    hist.set_more();
-
-    _replay_messages_core(hist);
-}
-
-void replay_messages_during_startup()
-{
-    formatted_scroller hist(FS_PREWRAPPED_TEXT);
-    hist.set_more();
-    hist.set_more(formatted_string::parse_string(
-                        "<cyan>Press Esc or Enter to continue, "
-                        "arrows/pgup/pgdn to scroll.</cyan>"));
-    hist.set_title(formatted_string::parse_string(recent_error_messages()
-        ? "<yellow>Crawl encountered errors during initialization:</yellow>"
-        : "<yellow>Initialization log:</yellow>"));
-    _replay_messages_core(hist);
 }
 
 void set_msg_dump_file(FILE* file)

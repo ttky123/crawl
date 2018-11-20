@@ -77,6 +77,7 @@ enum band_type
     BAND_SPRIGGANS,
     BAND_SPRIGGAN_ELITES,
     BAND_ENCHANTRESS,
+    BAND_AIR_ELEMENTALS,
     BAND_SPRIGGAN_DRUID,
     BAND_SPRIGGAN_RIDERS,
     BAND_PHANTASMAL_WARRIORS,
@@ -127,7 +128,7 @@ enum proximity_type   // proximity to player to create monster
     PROX_ANYWHERE,
     PROX_CLOSE_TO_PLAYER,
     PROX_AWAY_FROM_PLAYER,
-    PROX_AWAY_FROM_STAIRS,
+    PROX_NEAR_STAIRS,
 };
 
 enum mgen_flag

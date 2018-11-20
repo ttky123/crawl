@@ -1,6 +1,13 @@
-/*** Colour related functions (dlua only).
- * @module colour
- */
+/**
+ * @file
+ * @brief Colour related functions
+**/
+
+/*
+--- Colour related functions
+
+module "colour"
+*/
 
 #include "AppHdr.h"
 
@@ -54,40 +61,28 @@ static int _lua_element_colour(int rand, const coord_def& loc,
     lua_pushinteger(ls, loc.y);
     if (!dlua.callfn(nullptr, 3, 1))
     {
-        mprf(MSGCH_WARN, "%s", dlua.error.c_str());
+        mprf(MSGCH_WARN, "<1043>%s", dlua.error.c_str());
         return BLACK;
     }
 
     string colour = luaL_checkstring(ls, -1);
     lua_pop(ls, 1);
 
-    return str_to_colour(colour,-1,false,true);
+    return str_to_colour(colour);
 }
 
-/***
- * Define a new elemental colour.
- * @within dlua
- * @tparam string name colour name
- * @tparam colour_generation_function fun generation function
- * @function add_colour
- */
-/***
- * This function is not a member of the module, but documents the expected
- * behavior of the second argument to add_colour.
- * @within dlua
- * @tparam int rand random number between 0 and 119
- * @tparam int x
- * @tparam int y The coordinates of the cell to be coloured
- * @treturn string The name of the basic colour to be used
- * @function colour_generation_function
- */
+/*
+--- Define a new elemental colour.
+-- See <code>COLOUR:</code> in <tt>docs/develop/levels/syntax.txt</tt> for details.
+function add_colour(name, fun)
+*/
 LUAFN(l_add_colour)
 {
     const string &name = luaL_checkstring(ls, 1);
     if (lua_gettop(ls) != 2 || !lua_isfunction(ls, 2))
         luaL_error(ls, "Expected colour generation function.");
 
-    int col = str_to_colour(name, -1, false, true);
+    int col = str_to_colour(name, -1, false);
     if (col == -1)
         luaL_error(ls, ("Unknown colour: " + name).c_str());
 

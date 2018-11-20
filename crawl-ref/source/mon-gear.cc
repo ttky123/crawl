@@ -12,7 +12,6 @@
 #include "artefact.h"
 #include "art-enum.h"
 #include "dungeon.h"
-#include "item-name.h"
 #include "item-prop.h"
 #include "item-status-flag-type.h"
 #include "items.h"
@@ -42,8 +41,8 @@ void give_specific_item(monster* mon, int thing)
     item_def &mthing = mitm[thing];
     ASSERT(mthing.defined());
 
-    dprf(DIAG_MONPLACE, "Giving %s to %s...", mthing.name(DESC_PLAIN).c_str(),
-         mon->name(DESC_PLAIN, true).c_str());
+    dprf(DIAG_MONPLACE, "<1538> %s에게  %s를 주는 것은...", 
+         mon->name(DESC_PLAIN, true).c_str(), mthing.name(DESC_PLAIN).c_str());
 
     mthing.pos.reset();
     mthing.link = NON_ITEM;
@@ -72,9 +71,9 @@ void give_specific_item(monster* mon, int thing)
     unwind_var<int> save_speedinc(mon->speed_increment);
     if (!mon->pickup_item(mthing, false, true))
     {
-        dprf(DIAG_MONPLACE, "Destroying %s because %s doesn't want it!",
-             mthing.name(DESC_PLAIN, false, true).c_str(),
-             mon->name(DESC_PLAIN, true).c_str());
+        dprf(DIAG_MONPLACE, "<1539>%s가 %s를 원하지 않기 때문에 파괴합니다!!",
+            
+             mon->name(DESC_PLAIN, true).c_str(), mthing.name(DESC_PLAIN, false, true).c_str());
         destroy_item(thing, true);
         return;
     }
@@ -158,9 +157,10 @@ static void _give_wand(monster* mon, int level)
     if (rejection_reason)
     {
         dprf(DIAG_MONPLACE,
-             "Destroying %s because %s doesn't want a %s wand.",
-             wand.name(DESC_A).c_str(),
+             "<1540>%s가 %s 지팡이를 원하지 않기 때문에 %s를 파괴합니다.",
              mon->name(DESC_THE).c_str(),
+		     wand.name(DESC_A).c_str(),
+			 rejection_reaso
              rejection_reason);
         destroy_item(idx, true);
         return;
@@ -1434,7 +1434,6 @@ static void _give_ammo(monster* mon, int level, bool mons_summoned)
             break;
 
         case MONS_MERFOLK_JAVELINEER:
-        case MONS_MINOTAUR:
             weap_type  = MI_JAVELIN;
             qty        = random_range(9, 23, 2);
             if (one_chance_in(3))
@@ -1755,6 +1754,11 @@ int make_mons_armour(monster_type type, int level)
         item.sub_type  = ARM_ROBE;
         break;
 
+    case MONS_HAROLD:
+        item.base_type = OBJ_ARMOUR;
+        item.sub_type  = ARM_RING_MAIL;
+        break;
+
     case MONS_GNOLL_SHAMAN:
     case MONS_MELIAI:
         item.base_type = OBJ_ARMOUR;
@@ -1781,7 +1785,6 @@ int make_mons_armour(monster_type type, int level)
 
     case MONS_TERENCE:
     case MONS_URUG:
-    case MONS_HAROLD:
         item.base_type = OBJ_ARMOUR;
         item.sub_type  = random_choose_weighted(1, ARM_RING_MAIL,
                                                 3, ARM_SCALE_MAIL,
@@ -1839,7 +1842,6 @@ int make_mons_armour(monster_type type, int level)
     case MONS_VAULT_GUARD:
     case MONS_VAULT_WARDEN:
     case MONS_ANCIENT_CHAMPION:
-    case MONS_MINOTAUR:
         item.base_type = OBJ_ARMOUR;
         item.sub_type  = random_choose(ARM_CHAIN_MAIL, ARM_PLATE_ARMOUR);
         break;
@@ -2190,19 +2192,4 @@ void give_item(monster *mons, int level_number, bool mons_summoned)
     _give_ammo(mons, level_number, mons_summoned);
     _give_armour(mons, 1 + level_number / 2);
     _give_shield(mons, 1 + level_number / 2);
-}
-
-void view_monster_equipment(monster* mon)
-{
-    for (unsigned int i = 0; i <= MSLOT_LAST_VISIBLE_SLOT; ++i)
-    {
-        if (mon->inv[i] == NON_ITEM)
-            continue;
-
-        item_def &item = mitm[mon->inv[i]];
-        item.flags |= ISFLAG_SEEN;
-        set_ident_flags(item, ISFLAG_IDENT_MASK);
-        if (item.base_type == OBJ_WANDS)
-            set_ident_type(item, true);
-    }
 }

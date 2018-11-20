@@ -107,10 +107,10 @@ bool ugly_thing_mutate(monster& ugly, bool force)
             continue;
 
         if (act->is_player() && get_contamination_level())
-            msg = " basks in your mutagenic energy and changes!";
+            msg = "이(가) 당신의 변이 에너지를 쬐고는 변신했다!";
         else if (mons_genus(act->type) == MONS_UGLY_THING)
         {
-            msg = " basks in the mutagenic energy from its kin and changes!";
+            msg = "이(가) 동족의 변이 에너지를 쬐고는 변신했다!";
             const colour_t other_colour =
                 make_low_colour(act->as_monster()->colour);
             if (make_low_colour(ugly.colour) != other_colour)
@@ -119,7 +119,7 @@ bool ugly_thing_mutate(monster& ugly, bool force)
     }
 
     if (force)
-        msg = " basks in the mutagenic energy and changes!";
+        msg = "이(가) 변이 에너지를 쬐고는 변신했다!";
 
     if (!msg) // didn't find anything to mutate off of
         return false;
@@ -134,9 +134,7 @@ bool ugly_thing_mutate(monster& ugly, bool force)
 static void _split_ench_durations(monster* initial_slime, monster* split_off)
 {
     for (const auto &entry : initial_slime->enchantments)
-        // Don't let new slimes inherit being held by a web or net
-        if (entry.second.ench != ENCH_HELD)
-            split_off->add_ench(entry.second);
+        split_off->add_ench(entry.second);
 }
 
 // What to do about any enchantments these two creatures may have?
@@ -217,7 +215,7 @@ static monster* _do_split(monster* thing, const coord_def & target)
         return 0;
 
     if (you.can_see(*thing))
-        mprf("%s splits.", thing->name(DESC_A).c_str());
+        mprf("<1348>%s은(는) 분열했다.", thing->name(DESC_PLAIN).c_str());
 
     // Inflict the new slime with any enchantments on the parent.
     _split_ench_durations(thing, new_slime);
@@ -378,14 +376,14 @@ static bool _do_merge_crawlies(monster* crawlie, monster* merge_to)
         {
             if (crawlie->type == old_type)
             {
-                mprf("Two %s merge%s%s.",
+                mprf("<1349> %s두 마리가 나타났다.%s%s.",
                      pluralise_monster(crawlie->name(DESC_PLAIN)).c_str(),
                      changed ? " to form " : "",
                      changed ? merge_to->name(DESC_A).c_str() : "");
             }
             else
             {
-                mprf("%s merges with %s%s%s.",
+                mprf("<1350>%s 접근한다. %s%s%s.",
                      crawlie->name(DESC_A).c_str(),
                      old_name.c_str(),
                      changed ? " to form " : "",
@@ -394,15 +392,15 @@ static bool _do_merge_crawlies(monster* crawlie, monster* merge_to)
         }
         else if (changed)
         {
-            mprf("%s suddenly becomes %s.",
+            mprf("<1351>%s은(는) 갑자기 %s(으)로 변했다.",
                  uppercase_first(old_name).c_str(),
-                 merge_to->name(DESC_A).c_str());
+                 merge_to->name(DESC_PLAIN).c_str());
         }
         else
-            mprf("%s twists grotesquely.", merge_to->name(DESC_A).c_str());
+            mprf("<1352>%s은(는) 기이한 형상으로 뒤틀렸다.", merge_to->name(DESC_PLAIN).c_str());
     }
     else if (you.can_see(*crawlie))
-        mprf("%s suddenly disappears!", crawlie->name(DESC_A).c_str());
+        mprf("<1353>%s이(가) 갑자기 사라졌다!", crawlie->name(DESC_PLAIN).c_str());
 
     // Now kill the other monster.
     monster_die(*crawlie, KILL_DISMISSED, NON_MONSTER, true);
@@ -446,19 +444,19 @@ static void _do_merge_slimes(monster* initial_slime, monster* merge_to)
     {
         if (you.can_see(*initial_slime))
         {
-            mprf("Two slime creatures merge to form %s.",
+            mprf("<1354>슬라임 두 마리가 합쳐져, %s이(가) 되었다.",
                  merge_to->name(DESC_A).c_str());
         }
         else
         {
-            mprf("A slime creature suddenly becomes %s.",
-                 merge_to->name(DESC_A).c_str());
+            mprf("<1355>슬라임이 갑자기 %s(으)로 모습을 바꾸었다.",
+                 merge_to->name(DESC_PLAIN).c_str());
         }
 
         flash_view_delay(UA_MONSTER, LIGHTGREEN, 150);
     }
     else if (you.can_see(*initial_slime))
-        mpr("A slime creature suddenly disappears!");
+        mpr("슬라임 덩어리가 갑자기 사라졌다!");
 
     // Have to 'kill' the slime doing the merging.
     monster_die(*initial_slime, KILL_DISMISSED, NON_MONSTER, true);
@@ -746,13 +744,13 @@ static void _starcursed_scream(monster* mon, actor* target)
         {
             mprf(target->as_monster()->friendly() ? MSGCH_FRIEND_SPELL
                                                   : MSGCH_MONSTER_SPELL,
-                 "%s writhes in pain as voices assail %s mind.",
+                 "<1356>%s는 머리에서 울리는 asasil의 목솔에 고통으로 몸부림쳤다.%s",
                  target->name(DESC_THE).c_str(),
                  target->pronoun(PRONOUN_POSSESSIVE).c_str());
         }
     }
     else
-        mprf(MSGCH_MONSTER_SPELL, "%s", message);
+        mprf(MSGCH_MONSTER_SPELL, "<1357>%s", message);
     target->hurt(mon, dam, BEAM_MISSILE, KILLED_BY_BEAM, "",
                  "accursed screaming");
 
@@ -901,17 +899,17 @@ bool lost_soul_revive(monster& mons, killer_type killer)
         {
             if (!was_alive)
             {
-                mprf("%s sacrifices itself to reknit %s!",
-                     mi->name(DESC_THE).c_str(),
+                mprf("<1358>%s은(는) 스스로를 희생하여, %s을(를) 재결합했다!",
+                     mi->name(DESC_PLAIN).c_str(),
                      revivee_name.c_str());
             }
             else
             {
-                mprf("%s assumes the form of %s%s!",
-                     mi->name(DESC_THE).c_str(),
+                mprf("<1359>%s이(가) %s의 %s 형태를 취했다!",
+                     mi->name(DESC_PLAIN).c_str(),
                      revivee_name.c_str(),
-                     (mi->is_summoned() ? " and becomes anchored to this"
-                      " world" : ""));
+                     (mi->is_summoned() ? "고정된"
+                      " 세계" : ""));
             }
         }
 
@@ -956,8 +954,41 @@ void treant_release_fauna(monster& mons)
 
     if (created && you.can_see(mons))
     {
-        mprf("Angry insects surge out from beneath %s foliage!",
+        mprf("<1360>%s의 잎파리 밑에서 성난 곤충들이 튀어나왔다!",
              mons.name(DESC_ITS).c_str());
+    }
+}
+
+void check_grasping_roots(actor& act, bool quiet)
+{
+    bool source = false;
+    for (monster_near_iterator mi(act.pos(), LOS_NO_TRANS); mi; ++mi)
+    {
+        if (!mons_aligned(&act, *mi) && mi->has_ench(ENCH_GRASPING_ROOTS_SOURCE))
+        {
+            source = true;
+            break;
+        }
+    }
+
+    if (!source || !feat_has_solid_floor(grd(act.pos())))
+    {
+        if (act.is_player())
+        {
+            if (!quiet)
+                mpr("당신은 당신을 휘감고 있던 뿌리로부터 빠져나왔다.");
+            you.duration[DUR_GRASPING_ROOTS] = 0;
+            you.redraw_evasion = true;
+            if (you.attribute[ATTR_LAST_FLIGHT_STATUS]
+                && (you.racial_permanent_flight()
+                    || you.wearing_ego(EQ_ALL_ARMOUR, SPARM_FLYING)))
+           {
+                you.attribute[ATTR_PERM_FLIGHT] = 1;
+                float_player();
+           }
+        }
+        else
+            act.as_monster()->del_ench(ENCH_GRASPING_ROOTS);
     }
 }
 
@@ -1130,7 +1161,7 @@ bool mon_special_ability(monster* mons)
                 {
                     if (mons->move_to_pos(spot))
                     {
-                        simple_monster_message(*mons, " flows with the water.");
+                        simple_monster_message(*mons, "이(가) 물처럼 흐른다.");
                         used = true;
                     }
                 }
@@ -1148,6 +1179,24 @@ bool mon_special_ability(monster* mons)
             // Intentionally takes no energy; the creatures are flying free
             // on their own time.
         }
+
+        if (!mons->has_ench(ENCH_GRASPING_ROOTS_SOURCE) && x_chance_in_y(2, 3))
+        {
+            // Duration does not decay while there are hostiles around
+            mons->add_ench(mon_enchant(ENCH_GRASPING_ROOTS_SOURCE, 1, mons,
+                                       random_range(3, 7) * BASELINE_DELAY));
+            if (you.can_see(*mons))
+            {
+                mprf(MSGCH_MONSTER_SPELL, "<1361>%s이(가) 비틀린 가지와 함께 뻗어나왔다.",
+                     mons->name(DESC_THE).c_str());
+                mprf("<1362>%s 주변에서 뿌리들이 튀어나왔다!",
+                     mons->name(DESC_THE).c_str());
+            }
+            else if (you.see_cell(mons->pos()))
+                mpr("휘감는 뿌리가 대지로부터 솟구친다!");
+
+            used = true;
+        }
     }
     break;
 
@@ -1155,7 +1204,7 @@ bool mon_special_ability(monster* mons)
         if (mons->hit_points * 2 < mons->max_hit_points && one_chance_in(4)
              && !mons->has_ench(ENCH_INNER_FLAME))
         {
-            simple_monster_message(*mons, " overheats!");
+            simple_monster_message(*mons, "이 과열됐다!");
             mons->add_ench(mon_enchant(ENCH_INNER_FLAME, 0, 0,
                                        INFINITE_DURATION));
         }

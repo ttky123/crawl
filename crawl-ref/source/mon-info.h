@@ -153,8 +153,8 @@ enum monster_info_flags
 #endif
     MB_RESISTANCE,
     MB_HEXED,
-#if TAG_MAJOR_VERSION == 34
     MB_BONE_ARMOUR,
+#if TAG_MAJOR_VERSION == 34
     MB_CHANT_FIRE_STORM,
     MB_CHANT_WORD_OF_ENTROPY,
 #endif
@@ -172,8 +172,7 @@ enum monster_info_flags
     MB_NO_REWARD,
     MB_STILL_WINDS,
     MB_SLOWLY_DYING,
-    MB_PINNED,
-    MB_VILE_CLUTCH,
+    MB_DISTRACTED_ACROBATICS,
     NUM_MB_FLAGS
 };
 
@@ -245,7 +244,7 @@ struct monster_info : public monster_info_base
     {
         for (unsigned i = 0; i <= MSLOT_LAST_VISIBLE_SLOT; ++i)
         {
-            if (mi.inv[i])
+            if (mi.inv[i].get())
                 inv[i].reset(new item_def(*mi.inv[i]));
         }
     }
@@ -276,6 +275,7 @@ struct monster_info : public monster_info_base
         short xl_rank;
         short damage;
         short ac;
+        monster_type acting_part;
     } i_ghost;
 
     inline bool is(unsigned mbflag) const

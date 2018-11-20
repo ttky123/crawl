@@ -29,7 +29,7 @@
 
 static string _monster_clone_id_for(monster* mons)
 {
-    return make_stringf("%s%d",
+    return make_stringf("<1460>%s%d",
                         mons->name(DESC_PLAIN, true).c_str(),
                         you.num_turns);
 }
@@ -86,12 +86,25 @@ static void _mons_summon_monster_illusion(monster* caster,
         return;
 
     bool cloning_visible = false;
+    monster *clone = nullptr;
 
+    // [ds] Bind the original target's attitude before calling
+    // clone_mons, since clone_mons also updates arena bookkeeping.
+    //
     // If an enslaved caster creates a clone from a regular hostile,
     // the clone should still be friendly.
-    if (monster *clone = clone_mons(foe, true, &cloning_visible,
-                                    caster->friendly() ?
-                                    ATT_FRIENDLY : caster->attitude))
+    //
+    // This is all inside its own block so the unwind_var will be unwound
+    // before we use foe->name below.
+    {
+        const mon_attitude_type clone_att =
+            caster->friendly() ? ATT_FRIENDLY : caster->attitude;
+
+        unwind_var<mon_attitude_type> att(foe->attitude, clone_att);
+        clone = clone_mons(foe, true, &cloning_visible);
+    }
+
+    if (clone)
     {
         const string clone_id = _monster_clone_id_for(foe);
         clone->props[CLONE_SLAVE_KEY] = clone_id;
@@ -115,14 +128,14 @@ static void _mons_summon_monster_illusion(monster* caster,
         {
             if (!you.can_see(*caster))
             {
-                mprf("%s seems to step out of %s!",
-                     foe->name(DESC_THE).c_str(),
+                mprf("<1461>%s은(는) %s에서 빠져나온 것으로 보인다!",
+                     foe->name(DESC_PLAIN).c_str(),
                      foe->pronoun(PRONOUN_REFLEXIVE).c_str());
             }
             else
-                mprf("%s seems to draw %s out of %s!",
-                     caster->name(DESC_THE).c_str(),
-                     foe->name(DESC_THE).c_str(),
+                mprf("<1462>%s은(는) %s을 %s으로부터 끌어낸 것으로 보인다!",
+                     caster->name(DESC_PLAIN).c_str(),
+                     foe->name(DESC_PLAIN).c_str(),
                      foe->pronoun(PRONOUN_REFLEXIVE).c_str());
         }
     }
@@ -198,16 +211,17 @@ void mons_summon_illusion_from(monster* mons, actor *foe,
                  .set_summoned(mons, abj, spell_cast)))
         {
             if (card_power >= 0)
-                mpr("Suddenly you stand beside yourself.");
+                mpr("순간 당신은 당신 옆에 서 있었다.");
             else
-                mprf(MSGCH_WARN, "There is a horrible, sudden wrenching feeling in your soul!");
+                mprf(MSGCH_WARN, "갑자기 당신의 영혼이 뒤틀리는 것 처럼 느껴졌다. "
+                                 "정말 끔찍하다!");
 
             _init_player_illusion_properties(
                 get_monster_data(MONS_PLAYER_ILLUSION));
             _mons_load_player_enchantments(mons, clone);
         }
         else if (card_power >= 0)
-            mpr("You see a puff of smoke.");
+            mpr("당신은 연기 구름을 보았다.");
     }
     else
     {
@@ -255,55 +269,37 @@ bool mons_clonable(const monster* mon, bool needs_adjacent)
     return true;
 }
 
-/*
- * @param orig          The original monster to clone.
- * @param quiet         If true, suppress messages
- * @param obvious       If true, player can see the orig & cloned monster
- * @return              Returns the cloned monster
- */
-monster* clone_mons(const monster* orig, bool quiet, bool* obvious)
-{
-    // Pass temp_attitude to handle enslaved monsters cloning monsters
-    return clone_mons(orig, quiet, obvious, orig->temp_attitude());
-}
-
-/**
- * @param orig          The original monster to clone.
- * @param quiet         If true, suppress messages
- * @param obvious       If true, player can see the orig & cloned monster
- * @param mon_att       The attitude to set for the cloned monster
- * @return              Returns the cloned monster
- */
 monster* clone_mons(const monster* orig, bool quiet, bool* obvious,
-                    mon_attitude_type mon_att)
+                    coord_def pos)
 {
     // Is there an open slot in menv?
     monster* mons = get_free_monster();
-    coord_def pos(0, 0);
 
     if (!mons)
         return nullptr;
 
-    for (fair_adjacent_iterator ai(orig->pos()); ai; ++ai)
+    if (!in_bounds(pos))
     {
-        if (in_bounds(*ai)
-            && !actor_at(*ai)
-            && monster_habitable_grid(orig, grd(*ai)))
+        for (fair_adjacent_iterator ai(orig->pos()); ai; ++ai)
         {
-            pos = *ai;
+            if (in_bounds(*ai)
+                && !actor_at(*ai)
+                && monster_habitable_grid(orig, grd(*ai)))
+            {
+                pos = *ai;
+            }
         }
+
+        if (!in_bounds(pos))
+            return nullptr;
     }
 
-    if (!in_bounds(pos))
-        return nullptr;
-
     ASSERT(!actor_at(pos));
+    ASSERT_IN_BOUNDS(pos);
 
     *mons          = *orig;
     mons->set_new_monster_id();
     mons->move_to_pos(pos);
-    mons->attitude = mon_att;
-
     // The monster copy constructor doesn't copy constriction, so no need to
     // worry about that.
 
@@ -338,7 +334,7 @@ monster* clone_mons(const monster* orig, bool quiet, bool* obvious,
     if (you.can_see(*orig) && you.can_see(*mons))
     {
         if (!quiet)
-            simple_monster_message(*orig, " is duplicated!");
+            simple_monster_message(*orig, "이(가) 복제되었다!");
         *obvious = true;
     }
 

@@ -517,8 +517,7 @@ void handle_behaviour(monster* mon)
             {
                 // If their foe is marked, the monster always knows exactly
                 // where they are.
-                if (afoe && (mons_foe_is_marked(*mon)
-                                            || mon->has_ench(ENCH_HAUNTING)))
+                if (mons_foe_is_marked(*mon) || mon->has_ench(ENCH_HAUNTING))
                 {
                     mon->target = afoe->pos();
                     try_pathfind(mon);
@@ -1048,9 +1047,6 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
     switch (event)
     {
     case ME_DISTURB:
-#ifdef DEBUG_NOISE_PROPAGATION
-        dprf("Disturbing %s", mon->name(DESC_A, true).c_str());
-#endif
         // Assumes disturbed by noise...
         if (mon->asleep())
         {
@@ -1079,6 +1075,9 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
     case ME_ANNOY:
         if (mon->has_ench(ENCH_GOLD_LUST))
             mon->del_ench(ENCH_GOLD_LUST);
+
+        if (mon->has_ench(ENCH_DISTRACTED_ACROBATICS))
+            mon->del_ench(ENCH_DISTRACTED_ACROBATICS);
 
         // Will turn monster against <src>.
         // Orders to withdraw take precedence over interruptions
@@ -1122,7 +1121,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
 
             if (you.can_see(*mon))
             {
-                mprf("%s attack snaps %s out of %s fear.",
+                mprf("<1389>%s의 공격이 %s를(을) 공포에서 벗어나게 했다! %s",
                         src ? src->name(DESC_ITS).c_str() : "the",
                         mon->name(DESC_THE).c_str(),
                         mon->pronoun(PRONOUN_POSSESSIVE).c_str());
@@ -1150,9 +1149,6 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
         break;
 
     case ME_ALERT:
-#ifdef DEBUG_NOISE_PROPAGATION
-        dprf("Alerting %s", mon->name(DESC_A, true).c_str());
-#endif
         // Allow monsters falling asleep while patrolling (can happen if
         // they're left alone for a long time) to be woken by this event.
         if (mon->friendly() && mon->is_patrolling()
@@ -1324,9 +1320,6 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
     ASSERT_IN_BOUNDS_OR_ORIGIN(mon->target);
 
     // If it was unaware of you and you're its new foe, it might shout.
-#ifdef DEBUG_NOISE_PROPAGATION
-    dprf("%s could shout in behavioural event, allow_shout: %d, foe: %d", mon->name(DESC_A, true).c_str(), allow_shout, mon->foe);
-#endif
     if (was_unaware && allow_shout
         && mon->foe == MHITYOU && !mon->wont_attack())
     {
@@ -1358,7 +1351,7 @@ void behaviour_event(monster* mon, mon_event_type event, const actor *src,
             {
                 ASSERT_RANGE(get_talent(ABIL_CONVERT_TO_BEOGH, false).hotkey,
                              'A', 'z' + 1);
-                mprf("(press <w>%c</w> on the <w>%s</w>bility menu to convert to Beogh)",
+                mprf("<1390>(<w>%c</w>을 누르시오 : 베오그로 개종하려면 능력 메뉴창에서<w>%s</w>을.)",
                      get_talent(ABIL_CONVERT_TO_BEOGH, false).hotkey,
                      command_to_string(CMD_USE_ABILITY).c_str());
                 you.attribute[ATTR_SEEN_BEOGH] = 1;
@@ -1438,24 +1431,24 @@ static void _mons_indicate_level_exit(const monster* mon)
     const bool is_shaft = (get_trap_type(mon->pos()) == TRAP_SHAFT);
 
     if (feat_is_gate(feat))
-        simple_monster_message(*mon, " passes through the gate.");
+        simple_monster_message(*mon, "이(가) 관문을 통과했다.");
     else if (feat_is_travelable_stair(feat))
     {
         command_type dir = feat_stair_direction(feat);
         simple_monster_message(*mon,
-            make_stringf(" %s the %s.",
-                dir == CMD_GO_UPSTAIRS     ? "goes up" :
-                dir == CMD_GO_DOWNSTAIRS   ? "goes down"
-                                           : "takes",
-                feat_is_escape_hatch(feat) ? "escape hatch"
-                                           : "stairs").c_str());
+            make_stringf("<1391> %s : %s.",
+                dir == CMD_GO_UPSTAIRS     ? "올라간다" :
+                dir == CMD_GO_DOWNSTAIRS   ? "내려간다"
+                                           : "타고간다",
+                feat_is_escape_hatch(feat) ? "비상용 해치"
+                                           : "계단").c_str());
     }
     else if (is_shaft)
     {
         simple_monster_message(*mon,
-            make_stringf(" %s the shaft.",
-                mon->airborne() ? "goes down"
-                                : "jumps into").c_str());
+            make_stringf("<1392>이 구덩이로 %s.",
+                mon->airborne() ? "내려간다"
+                                : "뛰어든다").c_str());
     }
 }
 

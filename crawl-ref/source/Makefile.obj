@@ -125,7 +125,6 @@ l-you.o \
 lang-fake.o \
 lev-pand.o \
 libutil.o \
-loading-screen.o \
 lookup-help.o \
 los.o \
 los-def.o \
@@ -164,7 +163,6 @@ mon-tentacle.o \
 mon-transit.o \
 mon-util.o \
 monster.o \
-movement.o \
 mutation.o \
 nearby-danger.o \
 newgame.o \
@@ -199,7 +197,6 @@ ranged-attack.o \
 ray.o \
 rot.o \
 religion.o \
-scroller.o \
 shopping.o \
 shout.o \
 show.o \
@@ -245,7 +242,6 @@ transform.o \
 traps.o \
 travel.o \
 tutorial.o \
-ui.o \
 uncancel.o \
 unicode.o \
 view.o \
@@ -263,7 +259,8 @@ wizard.o \
 worley.o \
 xom.o \
 tilepick.o \
-tileview.o
+tileview.o \
+i18n-format.o
 
 TILES_OBJECTS = \
 tiledoll.o \
@@ -287,18 +284,21 @@ tilereg-grid.o \
 tilereg-inv.o \
 tilereg-map.o \
 tilereg-mem.o \
+tilereg-menu.o \
 tilereg-mon.o \
 tilereg-msg.o \
+tilereg-popup.o \
 tilereg-skl.o \
 tilereg-spl.o \
 tilereg-stat.o \
 tilereg-tab.o \
 tilereg-text.o \
+tilereg-title.o \
 tilesdl.o \
 tiletex.o \
 windowmanager-sdl.o \
 glwrapper-ogl.o \
-fontwrapper-ft.o
+fontwrapper-ft.o \
 
 WEBTILES_OBJECTS = \
 tileweb.o \

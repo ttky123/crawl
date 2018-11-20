@@ -40,7 +40,6 @@
 #include "spl-summoning.h"
 #include "state.h"
 #include "stringutil.h"
-#include "terrain.h"
 #include "throw.h"
 #ifdef USE_TILE
  #include "tiledef-icons.h"
@@ -85,10 +84,8 @@ InvEntry::InvEntry(const item_def &i)
 
     if (item_is_stationary_net(i))
     {
-        actor *trapped = actor_at(i.pos);
-        text += make_stringf(" (holding %s)",
-                            trapped ? trapped->name(DESC_A).c_str()
-                                    : "nobody"); // buggy net, but don't crash
+        text += make_stringf("<957> (holding %s)",
+                             net_holdee(i)->name(DESC_A).c_str());
     }
 
     if (i.base_type != OBJ_GOLD && in_inventory(i))
@@ -307,13 +304,13 @@ void InvEntry::set_show_glyph(bool doshow)
 }
 
 InvMenu::InvMenu(int mflags)
-    : Menu(mflags, "inventory"), type(MT_INVLIST), pre_select(nullptr),
+    : Menu(mflags, "inventory", false), type(MT_INVLIST), pre_select(nullptr),
       title_annotate(nullptr)
 {
 #ifdef USE_TILE_LOCAL
     if (Options.tile_menu_icons)
-        set_flags(mflags | MF_USE_TWO_COLUMNS);
 #endif
+        mdisplay->set_num_columns(2);
 
     InvEntry::set_show_cursor(false);
 }
@@ -377,8 +374,8 @@ static bool _has_hand_evokable()
     for (const auto &item : you.inv)
     {
         if (item.defined()
-            && item_is_evokable(item, true, true, false, false)
-            && !item_is_evokable(item, true, true, false, true))
+            && item_is_evokable(item, true, true, true, false, false)
+            && !item_is_evokable(item, true, true, true, false, true))
         {
             return true;
         }
@@ -416,6 +413,9 @@ string no_selectables_message(int item_selector)
     }
     case OSEL_UNIDENT:
         return "You don't have any unidentified items.";
+    case OSEL_RECHARGE:
+    case OSEL_SUPERCHARGE:
+        return "You aren't carrying any rechargeable items.";
     case OSEL_ENCHANTABLE_ARMOUR:
         return "You aren't carrying any armour which can be enchanted further.";
     case OBJ_CORPSES:
@@ -427,9 +427,8 @@ string no_selectables_message(int item_selector)
     case OBJ_POTIONS:
         return "You aren't carrying any potions.";
     case OBJ_SCROLLS:
-        return "You aren't carrying any scrolls.";
     case OBJ_BOOKS:
-        return "You don't have any books.";
+        return "You aren't carrying any spellbooks or scrolls.";
     case OBJ_WANDS:
         return "You aren't carrying any wands.";
     case OBJ_JEWELLERY:
@@ -457,8 +456,6 @@ string no_selectables_message(int item_selector)
         return "You aren't carrying anything you can give to a follower.";
     case OSEL_CURSABLE:
         return "You don't have any cursable items.";
-    case OSEL_UNCURSED_WORN_RINGS:
-        return "You aren't wearing any uncursed rings.";
     }
 
     return "You aren't carrying any such object.";
@@ -479,23 +476,29 @@ void InvMenu::load_inv_items(int item_selector, int excluded_slot,
 }
 
 #ifdef USE_TILE
-bool get_tiles_for_item(const item_def &item, vector<tile_def>& tileset, bool show_background)
+bool InvEntry::get_tiles(vector<tile_def>& tileset) const
 {
-    tileidx_t idx = tileidx_item(get_item_info(item));
+    if (!Options.tile_menu_icons)
+        return false;
+
+    if (quantity <= 0)
+        return false;
+
+    tileidx_t idx = tileidx_item(get_item_info(*item));
     if (!idx)
         return false;
 
-    if (in_inventory(item))
+    if (in_inventory(*item))
     {
-        const equipment_type eq = item_equip_slot(item);
+        const equipment_type eq = item_equip_slot(*item);
         if (eq != EQ_NONE)
         {
-            if (item_known_cursed(item))
+            if (item_known_cursed(*item))
                 tileset.emplace_back(TILE_ITEM_SLOT_EQUIP_CURSED, TEX_DEFAULT);
             else
                 tileset.emplace_back(TILE_ITEM_SLOT_EQUIP, TEX_DEFAULT);
         }
-        else if (item_known_cursed(item))
+        else if (item_known_cursed(*item))
             tileset.emplace_back(TILE_ITEM_SLOT_CURSED, TEX_DEFAULT);
 
         tileidx_t base_item = tileidx_known_base_item(idx);
@@ -509,11 +512,11 @@ bool get_tiles_for_item(const item_def &item, vector<tile_def>& tileset, bool sh
     else
     {
         // Do we want to display the floor type or is that too distracting?
-        const coord_def c = item.held_by_monster()
-            ? item.holding_monster()->pos()
-            : item.pos;
+        const coord_def c = item->held_by_monster()
+            ? item->holding_monster()->pos()
+            : item->pos;
         tileidx_t ch = 0;
-        if (c != coord_def() && show_background && item.link != ITEM_IN_SHOP)
+        if (c != coord_def() && show_background)
         {
             ch = tileidx_feature(c);
             if (ch == TILE_FLOOR_NORMAL)
@@ -538,37 +541,25 @@ bool get_tiles_for_item(const item_def &item, vector<tile_def>& tileset, bool sh
                 tileset.emplace_back(TILEI_MASK_SHALLOW_WATER_MURKY, TEX_ICONS);
         }
     }
-    if (item.base_type == OBJ_WEAPONS || item.base_type == OBJ_MISSILES
-        || item.base_type == OBJ_ARMOUR
+    if (item->base_type == OBJ_WEAPONS || item->base_type == OBJ_MISSILES
+        || item->base_type == OBJ_ARMOUR
 #if TAG_MAJOR_VERSION == 34
-        || item.base_type == OBJ_RODS
+        || item->base_type == OBJ_RODS
 #endif
        )
     {
-        tileidx_t brand = tileidx_known_brand(item);
+        tileidx_t brand = tileidx_known_brand(*item);
         if (brand)
             tileset.emplace_back(brand, TEX_DEFAULT);
     }
-    else if (item.base_type == OBJ_CORPSES)
+    else if (item->base_type == OBJ_CORPSES)
     {
-        tileidx_t brand = tileidx_corpse_brand(item);
+        tileidx_t brand = tileidx_corpse_brand(*item);
         if (brand)
             tileset.emplace_back(brand, TEX_DEFAULT);
     }
 
     return true;
-}
-
-bool InvEntry::get_tiles(vector<tile_def>& tileset) const
-{
-    if (!Options.tile_menu_icons)
-        return false;
-
-    // Runes + orb of zot have a special uncollected tile
-    if (quantity <= 0 && (item->base_type != OBJ_RUNES && item->base_type != OBJ_ORBS))
-        return false;
-
-    return get_tiles_for_item(*item, tileset, show_background);
 }
 #else
 bool InvEntry::get_tiles(vector<tile_def>& tileset) const { return false; }
@@ -858,6 +849,10 @@ menu_letter InvMenu::load_items(const vector<const item_def*> &mitems,
         }
     }
 
+    // Don't make a menu so tall that we recycle hotkeys on the same page.
+    if (mitems.size() > 52 && (max_pagesize > 52 || max_pagesize == 0))
+        set_maxpagesize(52);
+
     return ckey;
 }
 
@@ -989,8 +984,7 @@ vector<SelItem> select_items(const vector<const item_def*> &items,
             new_flags &= ~MF_MULTISELECT;
         }
 
-        new_flags |= MF_ALLOW_FORMATTING;
-        new_flags |= menu.get_flags() & MF_USE_TWO_COLUMNS;
+        new_flags |= MF_SHOW_PAGENUMBERS | MF_ALLOW_FORMATTING;
         menu.set_flags(new_flags);
         menu.show();
         selected = menu.get_selitems();
@@ -1023,6 +1017,9 @@ bool item_is_selected(const item_def &i, int selector)
 
     case OSEL_THROWABLE:
     {
+        if (you_worship(GOD_TROG) && item_is_spellbook(i))
+            return true;
+
         if (itype != OBJ_WEAPONS && itype != OBJ_MISSILES)
             return false;
 
@@ -1041,8 +1038,12 @@ bool item_is_selected(const item_def &i, int selector)
         return itype == OBJ_SCROLLS
                || (itype == OBJ_BOOKS && i.sub_type != BOOK_MANUAL);
 
+    case OSEL_RECHARGE:
+    case OSEL_SUPERCHARGE:
+        return item_is_rechargeable(i, selector != OSEL_SUPERCHARGE);
+
     case OSEL_EVOKABLE:
-        return item_is_evokable(i, true, true);
+        return item_is_evokable(i, true, true, true);
 
     case OSEL_ENCHANTABLE_ARMOUR:
         return is_enchantable_armour(i, true);
@@ -1086,10 +1087,6 @@ bool item_is_selected(const item_def &i, int selector)
 
     case OSEL_CURSABLE:
         return item_is_cursable(i);
-
-    case OSEL_UNCURSED_WORN_RINGS:
-        return !i.cursed() && item_is_equipped(i) && itype == OBJ_JEWELLERY
-            && !jewellery_is_amulet(i);
 
     default:
         return false;
@@ -1180,19 +1177,28 @@ static unsigned char _invent_select(const char *title = nullptr,
 
 void display_inventory()
 {
-    InvMenu menu(MF_SINGLESELECT | MF_ALLOW_FORMATTING);
-    menu.load_inv_items(OSEL_ANY, -1);
-    menu.set_type(MT_INVLIST);
+    int flags = MF_SINGLESELECT;
+    if (you.pending_revival || crawl_state.updating_scores)
+        flags |= MF_EASY_EXIT;
 
-    menu.on_single_selection = [](const MenuEntry& item)
+    while (true)
     {
-        unsigned char select = item.hotkeys[0];
-        const int invidx = letter_to_index(select);
-        ASSERT(you.inv[invidx].defined());
-        return describe_item(you.inv[invidx]);
-    };
+        unsigned char select =
+            _invent_select(nullptr, MT_INVLIST, OSEL_ANY, -1, flags);
 
-    menu.show(true);
+        if (isaalpha(select))
+        {
+            const int invidx = letter_to_index(select);
+            if (you.inv[invidx].defined())
+            {
+                if (!describe_item(you.inv[invidx]))
+                    break;
+            }
+        }
+        else
+            break;
+    }
+
     if (!crawl_state.doing_prev_cmd_again)
         redraw_screen();
 }
@@ -1242,7 +1248,7 @@ static string _drop_selitem_text(const vector<MenuEntry*> *s)
         }
     }
 
-    return make_stringf(" (%u%s turn%s)",
+    return make_stringf("<958> (%u%s turn%s)",
                         (unsigned int)s->size(),
                         extraturns? "+" : "",
                         s->size() > 1? "s" : "");
@@ -1284,7 +1290,7 @@ vector<SelItem> prompt_drop_items(const vector<SelItem> &preselected_items)
 
         if (need_prompt)
         {
-            mprf(MSGCH_PROMPT, "%s (<w>?</w> for menu, <w>Esc</w> to quit)",
+            mprf(MSGCH_PROMPT, "<959>%s (메뉴로 돌아가기 <w>?</w>, 종료하기 <w>Esc</w>)",
                  prompt.c_str());
         }
 
@@ -1358,7 +1364,7 @@ vector<SelItem> prompt_drop_items(const vector<SelItem> &preselected_items)
             ret = letter_to_index(keyin);
 
             if (!you.inv[ret].defined())
-                mpr("You don't have any such object.");
+                mpr("당신은 그런 물건을 가지고 있지 않다.");
             else
                 break;
         }
@@ -1382,30 +1388,28 @@ vector<SelItem> prompt_drop_items(const vector<SelItem> &preselected_items)
     return items;
 }
 
-static bool item_matches_digit_inscription(item_def &item, char digit, operation_types oper)
+int digit_inscription_to_inv_index(char digit, operation_types oper)
 {
-    const string& r(item.inscription);
     const char iletter = static_cast<char>(oper);
-    for (unsigned int j = 0; j + 2 < r.size(); ++j)
-        if (r[j] == '@' && (r[j+1] == iletter || r[j+1] == '*') && r[j+2] == digit)
-            return true;
-    return false;
-}
 
-item_def *digit_inscription_to_item(char digit, operation_types oper)
-{
     for (int i = 0; i < ENDOFPACK; ++i)
-        if (you.inv[i].defined()
-                && item_matches_digit_inscription(you.inv[i], digit, oper))
+    {
+        if (you.inv[i].defined())
         {
-            return &you.inv[i];
+            const string& r(you.inv[i].inscription);
+            // Note that r.size() is unsigned.
+            for (unsigned int j = 0; j + 2 < r.size(); ++j)
+            {
+                if (r[j] == '@'
+                     && (r[j+1] == iletter || r[j+1] == '*')
+                     && r[j+2] == digit)
+                {
+                    return i;
+                }
+            }
         }
-
-    for (stack_iterator si(you.pos(), true); si; ++si)
-        if (item_matches_digit_inscription(*si, digit, oper))
-            return &*si;
-
-    return nullptr;
+    }
+    return -1;
 }
 
 static bool _has_warning_inscription(const item_def& item,
@@ -1501,7 +1505,7 @@ bool check_old_item_warning(const item_def& item,
     prompt += old_item.name(DESC_INVENTORY);
     prompt += "?";
     if (penance)
-        prompt += " This could place you under penance!";
+        prompt += " 이것은 당신을 참회에 빠뜨린다!";
     return yesno(prompt.c_str(), false, 'n');
 }
 
@@ -1571,6 +1575,13 @@ bool needs_handle_warning(const item_def &item, operation_types oper,
     // and you don't know what kind of a deck it is.
     if (item.base_type == OBJ_MISCELLANY && !is_deck(item)
         && oper == OPER_EVOKE && god_hates_item(item))
+    {
+        penance = true;
+        return true;
+    }
+
+    // You know that mutagenic chunks mutate you.
+    if (oper == OPER_EAT && you_worship(GOD_ZIN) && god_hates_item(item))
     {
         penance = true;
         return true;
@@ -1764,7 +1775,7 @@ bool check_warning_inscriptions(const item_def& item,
         }
         prompt += "?";
         if (penance)
-            prompt += " This could place you under penance!";
+            prompt += " 이것은 당신을 참회에 빠뜨린다!";
         return yesno(prompt.c_str(), false, 'n')
                && check_old_item_warning(item, oper);
     }
@@ -1820,7 +1831,7 @@ int prompt_invent_item(const char *prompt,
 
     if (!any_items_of_type(type_expect) && type_expect != OSEL_WIELD)
     {
-        mprf(MSGCH_PROMPT, "%s",
+        mprf(MSGCH_PROMPT, "<960>%s",
              no_selectables_message(type_expect).c_str());
         return PROMPT_NOTHING;
     }
@@ -1853,7 +1864,7 @@ int prompt_invent_item(const char *prompt,
 
         if (need_prompt)
         {
-            mprf(MSGCH_PROMPT, "%s (<w>?</w> for menu, <w>Esc</w> to quit)",
+            mprf(MSGCH_PROMPT, "<961>%s (메뉴로 돌아가기 <w>?</w>, 종료하기 <w>Esc</w>)",
                  prompt);
         }
         else
@@ -1883,7 +1894,8 @@ int prompt_invent_item(const char *prompt,
                         mtype,
                         current_type_expected,
                         -1,
-                        MF_SINGLESELECT | MF_ANYPRINTABLE | MF_NO_SELECT_QTY,
+                        MF_SINGLESELECT | MF_ANYPRINTABLE | MF_NO_SELECT_QTY
+                            | MF_EASY_EXIT,
                         nullptr,
                         &items);
 
@@ -1911,11 +1923,11 @@ int prompt_invent_item(const char *prompt,
         else if (isadigit(keyin))
         {
             // scan for our item
-            item_def *item = digit_inscription_to_item(keyin, oper);
-            if (item && in_inventory(*item))
+            int res = digit_inscription_to_inv_index(keyin, oper);
+            if (res != -1)
             {
-                ret = item->link;
-                if (!do_warning || check_warning_inscriptions(*item, oper))
+                ret = res;
+                if (!do_warning || check_warning_inscriptions(you.inv[ret], oper))
                     break;
             }
         }
@@ -1937,11 +1949,11 @@ int prompt_invent_item(const char *prompt,
             ret = letter_to_index(keyin);
 
             if (must_exist && !you.inv[ret].defined())
-                mpr("You don't have any such object.");
+                mpr("당신은 그런 물건을 가지고 있지 않다.");
             else if (must_exist && !item_is_selected(you.inv[ret],
                                                      current_type_expected))
             {
-                mpr("That's the wrong kind of item! (Use * to select it.)");
+                mpr("그건 잘못된 종류의 아이템이다! (*를 눌러 선택)");
             }
             else if (!do_warning || check_warning_inscriptions(you.inv[ret], oper))
                 break;
@@ -1988,11 +2000,12 @@ bool item_is_wieldable(const item_def &item)
  * @param reach     Do weapons of reaching count?
  * @param known     When set, return true for items of unknown type which
  *                  might be evokable.
+ * @param all_wands When set, return true for empty wands.
  * @param msg       Whether we need to print a message.
  * @param equip     When false, ignore wield and meld requirements.
  */
 bool item_is_evokable(const item_def &item, bool reach, bool known,
-                      bool msg, bool equip)
+                      bool all_wands, bool msg, bool equip)
 {
     const string error = item_is_melded(item)
             ? "Your " + item.name(DESC_QUALNAME) + " is melded into your body."
@@ -2043,6 +2056,15 @@ bool item_is_evokable(const item_def &item, bool reach, bool known,
     switch (item.base_type)
     {
     case OBJ_WANDS:
+        if (all_wands)
+            return true;
+
+        if (item.used_count == ZAPCOUNT_EMPTY)
+        {
+            if (msg)
+                mpr("이 마법봉은 충전되어 있지 않다.");
+            return false;
+        }
         return true;
 
     case OBJ_WEAPONS:
@@ -2061,7 +2083,7 @@ bool item_is_evokable(const item_def &item, bool reach, bool known,
         }
 
         if (msg)
-            mpr("That item cannot be evoked!");
+            mpr("그 아이템은 발동할 수 없다!");
         return false;
 
     case OBJ_STAVES:
@@ -2078,7 +2100,7 @@ bool item_is_evokable(const item_def &item, bool reach, bool known,
             return true;
         }
         if (msg)
-            mpr("That item cannot be evoked!");
+            mpr("그 아이템은 발동할 수 없다!");
         return false;
 
 #if TAG_MAJOR_VERSION == 34
@@ -2094,7 +2116,7 @@ bool item_is_evokable(const item_def &item, bool reach, bool known,
 
     default:
         if (msg)
-            mpr("That item cannot be evoked!");
+            mpr("그 아이템은 발동할 수 없다!");
         return false;
     }
 }

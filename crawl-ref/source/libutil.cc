@@ -379,7 +379,12 @@ GotoRegion get_cursor_region()
 {
     return _current_region;
 }
-#endif // USE_TILE_LOCAL
+
+void set_cursor_region(GotoRegion region)
+{
+    _current_region = region;
+}
+#endif // !USE_TILE_LOCAL
 
 coord_def cgetsize(GotoRegion region)
 {
@@ -428,10 +433,10 @@ mouse_control::~mouse_control()
     ms_current_mode = m_previous_mode;
 }
 
-string unwrap_desc(string desc)
+string unwrap_desc(string&& desc)
 {
     // Don't append a newline to an empty description.
-    if (desc == "")
+    if (desc.empty())
         return "";
 
     trim_string_right(desc);
@@ -445,7 +450,7 @@ string unwrap_desc(string desc)
         desc.erase(0, pos + 1);
         if (tag == "nowrap")
             return desc;
-        else if (desc == "")
+        else if (desc.empty())
             return "";
     }
 

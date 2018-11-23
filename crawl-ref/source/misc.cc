@@ -46,14 +46,14 @@ void swap_with_monster(monster* mon_to_swap)
 
     if (you.stasis())
     {
-        mpr("당신의 정지장이 순간이동을 방해한다.");
+        mpr("Your stasis prevents you from teleporting.");
         return;
     }
 
     // Be nice: no swapping into uninhabitable environments.
     if (!you.is_habitable(newpos) || !mon.is_habitable(you.pos()))
     {
-        mpr("당신은 주위를 돌았다.");
+        mpr("You spin around.");
         return;
     }
 
@@ -63,7 +63,7 @@ void swap_with_monster(monster* mon_to_swap)
     // If it was submerged, it surfaces first.
     mon.del_ench(ENCH_SUBMERGED);
 
-    mprf("<1347>당신은 %s와 위치를 바꾸었다.", mon.name(DESC_PLAIN).c_str());
+    mprf("You swap places with %s.", mon.name(DESC_THE).c_str());
 
     mon.move_to_pos(you.pos(), true, true);
 
@@ -90,7 +90,7 @@ void swap_with_monster(monster* mon_to_swap)
             if (net != NON_ITEM)
             {
                 destroy_item(net);
-                mpr("그물이 찢어지며 떨어졌다!");
+                mpr("The net rips apart!");
             }
 
             if (you_caught)
@@ -100,9 +100,9 @@ void swap_with_monster(monster* mon_to_swap)
         {
             you.attribute[ATTR_HELD] = 1;
             if (get_trapping_net(you.pos()) != NON_ITEM)
-                mpr("당신은 그물에 얽혔다!");
+                mpr("You become entangled in the net!");
             else
-                mpr("당신은 거미줄에 갇혔다!");
+                mpr("You get stuck in the web!");
             you.redraw_quiver = true; // Account for being in a net.
             you.redraw_evasion = true;
         }
@@ -221,4 +221,18 @@ bool tobool(maybe_bool mb, bool def)
 maybe_bool frombool(bool b)
 {
     return b ? MB_TRUE : MB_FALSE;
+}
+
+const string maybe_to_string(const maybe_bool mb)
+{
+    switch (mb)
+    {
+    case MB_TRUE:
+        return "true";
+    case MB_FALSE:
+        return "false";
+    case MB_MAYBE:
+    default:
+        return "maybe";
+    }
 }

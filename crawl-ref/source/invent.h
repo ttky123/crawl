@@ -21,29 +21,31 @@ enum object_selector
     OSEL_ANY                     =  -1,
     OSEL_WIELD                   =  -2,
     OSEL_UNIDENT                 =  -3,
-//  OSEL_EQUIP                   =  -4,
-    OSEL_RECHARGE                =  -5,
-    OSEL_ENCHANTABLE_ARMOUR      =  -6,
-    OSEL_BEOGH_GIFT              =  -7,
-    OSEL_DRAW_DECK               =  -8,
-    OSEL_THROWABLE               =  -9,
-    OSEL_EVOKABLE                = -10,
-    OSEL_WORN_ARMOUR             = -11,
-//  OSEL_FRUIT                   = -12,
-    OSEL_CURSED_WORN             = -13,
 #if TAG_MAJOR_VERSION == 34
-    OSEL_UNCURSED_WORN_ARMOUR    = -14,
-    OSEL_UNCURSED_WORN_JEWELLERY = -15,
+    OSEL_RECHARGE                =  -4,
 #endif
-    OSEL_BRANDABLE_WEAPON        = -16,
-    OSEL_ENCHANTABLE_WEAPON      = -17,
-    OSEL_BLESSABLE_WEAPON        = -18,
-    OSEL_SUPERCHARGE             = -19,
-    OSEL_CURSABLE                = -20, // Items that are cursable and not
+    OSEL_ENCHANTABLE_ARMOUR      =  -5,
+    OSEL_BEOGH_GIFT              =  -6,
+    OSEL_DRAW_DECK               =  -7,
+    OSEL_THROWABLE               =  -8,
+    OSEL_EVOKABLE                =  -9,
+    OSEL_WORN_ARMOUR             = -10,
+    OSEL_CURSED_WORN             = -11,
+#if TAG_MAJOR_VERSION == 34
+    OSEL_UNCURSED_WORN_ARMOUR    = -12,
+    OSEL_UNCURSED_WORN_JEWELLERY = -13,
+#endif
+    OSEL_BRANDABLE_WEAPON        = -14,
+    OSEL_ENCHANTABLE_WEAPON      = -15,
+    OSEL_BLESSABLE_WEAPON        = -16,
+    OSEL_CURSABLE                = -17, // Items that are cursable and not
                                         // known-cursed. Unknown-cursed items
                                         // are included, to prevent information
                                         // leakage.
-    OSEL_DIVINE_RECHARGE         = -21,
+#if TAG_MAJOR_VERSION == 34
+    OSEL_DIVINE_RECHARGE         = -18,
+#endif
+    OSEL_UNCURSED_WORN_RINGS     = -19,
 };
 
 /// Behaviour flags for prompt_invent_item().
@@ -234,6 +236,10 @@ void identify_inventory();
 const char *item_class_name(int type, bool terse = false);
 const char *item_slot_name(equipment_type type);
 
+#ifdef USE_TILE
+bool get_tiles_for_item(const item_def &item, vector<tile_def>& tileset, bool show_background);
+#endif
+
 bool check_old_item_warning(const item_def& item, operation_types oper);
 bool check_warning_inscriptions(const item_def& item, operation_types oper);
 
@@ -246,9 +252,8 @@ void list_charging_evokers(FixedVector<item_def*, NUM_MISCELLANY> &evokers);
 
 bool item_is_wieldable(const item_def &item);
 bool item_is_evokable(const item_def &item, bool reach = true,
-                      bool known = false, bool all_wands = false,
-                      bool msg = false, bool equip = true);
+                      bool known = false, bool msg = false, bool equip = true);
 bool needs_notele_warning(const item_def &item, operation_types oper);
 bool needs_handle_warning(const item_def &item, operation_types oper,
                           bool &penance);
-int digit_inscription_to_inv_index(char digit, operation_types oper);
+item_def *digit_inscription_to_item(char digit, operation_types oper);

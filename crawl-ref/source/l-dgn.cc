@@ -1,3 +1,6 @@
+/*** Dungeon builder interface (dlua only).
+ * @module dgn
+ */
 #include "AppHdr.h"
 
 #include "l-libs.h"
@@ -27,9 +30,6 @@
 #include "view.h"
 
 static const char *VAULT_PLACEMENT_METATABLE = "crawl.vault-placement";
-
-///////////////////////////////////////////////////////////////////////////
-// Lua dungeon bindings (in the dgn table).
 
 static inline bool _lua_boolean(lua_State *ls, int ndx, bool defval)
 {
@@ -671,7 +671,7 @@ static int dgn_lfloorcol(lua_State *ls)
     if (!lua_isnone(ls, 2))
     {
         const char *s = luaL_checkstring(ls, 2);
-        int colour = str_to_colour(s);
+        int colour = str_to_colour(s, -1, false, true);
 
         if (colour < 0 || colour == BLACK)
         {
@@ -702,7 +702,7 @@ static int dgn_lrockcol(lua_State *ls)
     if (!lua_isnone(ls, 2))
     {
         const char *s = luaL_checkstring(ls, 2);
-        int colour = str_to_colour(s);
+        int colour = str_to_colour(s, -1, false, true);
 
         if (colour < 0 || colour == BLACK)
         {
@@ -744,7 +744,7 @@ static int _lua_colour(lua_State *ls, int ndx,
         return lua_tointeger(ls, ndx);
     else if (const char *s = luaL_checkstring(ls, ndx))
     {
-        const int colour = str_to_colour(s);
+        const int colour = str_to_colour(s, -1, false, true);
 
         if (colour < 0 || colour == forbidden_colour)
         {
@@ -953,14 +953,11 @@ static int lua_dgn_set_branch_epilogue(lua_State *ls)
     branch_type br = branch_by_abbrevname(branch_name);
     if (br == NUM_BRANCHES)
     {
-        luaL_error(ls, make_stringf("<1054>unknown branch: '%s'.", branch_name).c_str());
+        luaL_error(ls, make_stringf("unknown branch: '%s'.", branch_name).c_str());
         return 0;
     }
 
-    const char *func_name = luaL_checkstring(ls, 2);
-
-    if (!func_name || !*func_name)
-        return 0;
+    const char *func_name = luaL_optstring(ls, 2, "");
 
     dgn_set_branch_epilogue(br, func_name);
 
@@ -1030,7 +1027,7 @@ static int dgn_floor_halo(lua_State *ls)
     }
 
     const char *s2 = luaL_checkstring(ls, 2);
-    short colour = str_to_colour(s2);
+    short colour = str_to_colour(s2, -1, false, true);
 
     if (colour == -1)
     {
@@ -1360,7 +1357,7 @@ static bool _lua_map_place_valid(const map_def &map,
     // Lua error invalidates place.
     if (err)
     {
-        mprf(MSGCH_ERROR, "<1055>Lua error: %s", lua_tostring(ls, -1));
+        mprf(MSGCH_ERROR, "Lua error: %s", lua_tostring(ls, -1));
         return true;
     }
 

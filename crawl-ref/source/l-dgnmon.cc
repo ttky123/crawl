@@ -1,8 +1,6 @@
-/**
- * @file
- * @brief Monster-related functions in lua library "dgn".
-**/
-
+/***
+ * @module dgn
+ */
 #include "AppHdr.h"
 
 #include "l-libs.h"
@@ -146,14 +144,14 @@ static int dgn_set_random_mon_list(lua_State *ls)
         if (mon.colour != COLOUR_INHERIT)
         {
             mprf(MSGCH_ERROR, "dgn.set_random_mon_list() : colour for "
-                 "<1067>%s being ignored.",
+                 "%s being ignored.",
                  name.c_str());
         }
 
         if (!mon.items.empty())
         {
             mprf(MSGCH_ERROR, "dgn.set_random_mon_list() : items for "
-                 "<1068>%s being ignored.",
+                 "%s being ignored.",
                  name.c_str());
         }
     } // for (int i = 0; i < num_mons; i++)

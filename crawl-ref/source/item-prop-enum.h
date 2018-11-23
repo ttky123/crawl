@@ -1,5 +1,14 @@
 #pragma once
 
+/* Don't change the order of any enums in this file unless you are breaking
+ * save compatibility. See ../docs/develop/save_compatibility.txt for
+ * more details, including how to schedule both the current and future
+ * enum orders.
+ *
+ * If you do break compatibility and change the order, be sure to change
+ * rltiles/dc-item.txt to match.
+ */
+
 enum armour_type
 {
     ARM_ROBE, // order of mundane armour matters to _upgrade_body_armour
@@ -189,7 +198,7 @@ enum jewellery_type
     RING_SLAYING,
     RING_SEE_INVISIBLE,
     RING_RESIST_CORROSION,
-    RING_LOUDNESS,
+    RING_ATTENTION,
     RING_TELEPORTATION,
     RING_EVASION,
 #if TAG_MAJOR_VERSION == 34
@@ -218,9 +227,7 @@ enum jewellery_type
     AMU_RAGE = 35,
     AMU_FIRST_AMULET = AMU_RAGE,
     AMU_HARM,
-#if TAG_MAJOR_VERSION == 34
-    AMU_DISMISSAL,
-#endif
+    AMU_ACROBAT,
     AMU_MANA_REGENERATION,
     AMU_THE_GOURMAND,
 #if TAG_MAJOR_VERSION == 34
@@ -362,7 +369,7 @@ enum rune_type
     RUNE_SNAKE,
     RUNE_SHOALS,
     RUNE_SLIME,
-    RUNE_ELF, // unused
+    RUNE_ELF, // only used in sprints
     RUNE_VAULTS,
     RUNE_TOMB,
 
@@ -382,7 +389,7 @@ enum rune_type
     RUNE_GLOORX_VLOQ,
 
     RUNE_SPIDER,
-    RUNE_FOREST, // unused
+    RUNE_FOREST, // only used in sprints
     NUM_RUNE_TYPES
 };
 
@@ -411,8 +418,8 @@ enum scroll_type
     SCR_ENCHANT_WEAPON_II,
 #endif
     SCR_BRAND_WEAPON,
-    SCR_RECHARGING,
 #if TAG_MAJOR_VERSION == 34
+    SCR_RECHARGING,
     SCR_ENCHANT_WEAPON_III,
 #endif
     SCR_HOLY_WORD,
@@ -706,17 +713,15 @@ enum wand_type
 #if TAG_MAJOR_VERSION == 34
     WAND_FIRE_REMOVED,
     WAND_COLD_REMOVED,
-#endif
-    WAND_CONFUSION,
-#if TAG_MAJOR_VERSION == 34
+    WAND_CONFUSION_REMOVED,
     WAND_INVISIBILITY_REMOVED,
 #endif
     WAND_DIGGING,
     WAND_ICEBLAST,
 #if TAG_MAJOR_VERSION == 34
     WAND_TELEPORTATION_REMOVED,
+    WAND_LIGHTNING_REMOVED,
 #endif
-    WAND_LIGHTNING,
     WAND_POLYMORPH,
     WAND_ENSLAVEMENT,
     WAND_ACID,
@@ -727,28 +732,19 @@ enum wand_type
     NUM_WANDS
 };
 
-enum zap_count_type
-{
-    ZAPCOUNT_EMPTY       = -1,
-    ZAPCOUNT_UNKNOWN     = -2,
-    ZAPCOUNT_RECHARGED   = -3,
-};
-
 enum food_type
 {
-    FOOD_MEAT_RATION,
-    FOOD_BREAD_RATION,
+    FOOD_RATION,
 #if TAG_MAJOR_VERSION == 34
+    FOOD_BREAD_RATION,
     FOOD_PEAR,
     FOOD_APPLE,
     FOOD_CHOKO,
 #endif
-    FOOD_ROYAL_JELLY,
 #if TAG_MAJOR_VERSION == 34
-    FOOD_UNUSED, // was: royal jelly
-#endif
+    FOOD_ROYAL_JELLY,   // was: royal jelly
+    FOOD_UNUSED, // was: royal jelly and/or pizza
     FOOD_FRUIT,  // was: snozzcumber
-#if TAG_MAJOR_VERSION == 34
     FOOD_PIZZA,
     FOOD_APRICOT,
     FOOD_ORANGE,

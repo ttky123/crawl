@@ -15,6 +15,7 @@
 #include "colour.h"
 #include "cloud.h"
 #include "database.h"
+#include "dbg-util.h"
 #include "decks.h"
 #include "describe.h"
 #include "describe-god.h"
@@ -45,9 +46,11 @@
 #include "terrain.h"
 #ifdef USE_TILE
 #include "tile-flags.h"
+#include "tiledef-main.h"
 #include "tilepick.h"
 #include "tileview.h"
 #endif
+#include "ui.h"
 #include "view.h"
 #include "viewchar.h"
 
@@ -67,10 +70,8 @@ enum class lookup_type
     db_suffix       = 1<<0,
     /// whether the sorting functionality should be turned off
     disable_sort    = 1<<1,
-    /// whether the display menu for this supports tiles
-    support_tiles   = 1<<2,
     /// whether the display menu for this has toggleable sorting
-    toggleable_sort = 1<<3,
+    toggleable_sort = 1<<2,
 };
 DEF_BITFIELD(lookup_type_flags, lookup_type);
 
@@ -141,7 +142,8 @@ private:
     /// a function taking a single character & returning a list of keys
     /// corresponding to that glyph
     keys_by_glyph glyph_fetch;
-    /// no idea, sorry :(
+    /// take the list of keys that were automatically found and fix them
+    /// up if necessary
     db_keys_recap recap;
     /// take a letter & a key, return a corresponding new menu entry
     menu_entry_generator menu_gen;
@@ -158,26 +160,39 @@ private:
  * @param soh_name  The name of the monster; e.g. "the Serpent of Hell dis".
  * @return          The corresponding enum; e.g. MONS_SERPENT_OF_HELL_DIS.
  */
-static monster_type _soh_type(string soh_name)
+static monster_type _soh_type(string &soh_name)
 {
-    // trying to minimize code duplication...
-    static const vector<monster_type> soh_types = {
-        MONS_SERPENT_OF_HELL, MONS_SERPENT_OF_HELL_DIS,
-        MONS_SERPENT_OF_HELL_COCYTUS, MONS_SERPENT_OF_HELL_TARTARUS,
-    };
+    const string flavour = lowercase_string(soh_name.substr(soh_name.find_last_of(' ')+1));
 
-    // grab 'cocytus' etc
-    const string flavour_name
-        = soh_name.substr(lowercase(soh_name).find("hell") + 5);
-    for (monster_type mtype : soh_types)
-        if (serpent_of_hell_flavour(mtype) == flavour_name)
-            return mtype;
-    return MONS_PROGRAM_BUG;
+    branch_type branch = NUM_BRANCHES;
+    for (int b = BRANCH_FIRST_HELL; b <= BRANCH_LAST_HELL; ++b)
+        if (ends_with(flavour, lowercase_string(branches[b].shortname)))
+            branch = (branch_type)b;
+
+    switch (branch)
+    {
+        case BRANCH_COCYTUS:
+            return MONS_SERPENT_OF_HELL_COCYTUS;
+        case BRANCH_DIS:
+            return MONS_SERPENT_OF_HELL_DIS;
+        case BRANCH_TARTARUS:
+            return MONS_SERPENT_OF_HELL_TARTARUS;
+        case BRANCH_GEHENNA:
+            return MONS_SERPENT_OF_HELL;
+        default:
+            die("bad serpent of hell name");
+    }
 }
 
 static bool _is_soh(string name)
 {
     return starts_with(lowercase(name), "the serpent of hell");
+}
+
+static string _soh_name(monster_type m_type)
+{
+    branch_type b = serpent_of_hell_branch(m_type);
+    return string("The Serpent of Hell (") + branches[b].longname + ")";
 }
 
 static monster_type _mon_by_name(string name)
@@ -223,8 +238,7 @@ static bool _compare_mon_toughness(MenuEntry *entry_a, MenuEntry* entry_b)
 class DescMenu : public Menu
 {
 public:
-    DescMenu(int _flags, bool _toggleable_sort, bool _text_only)
-    : Menu(_flags, "", _text_only), sort_alpha(true),
+    DescMenu(int _flags, bool _toggleable_sort) : Menu(_flags, ""), sort_alpha(true),
     toggleable_sort(_toggleable_sort)
     {
         set_highlighter(nullptr);
@@ -264,7 +278,7 @@ public:
 
         for (unsigned int i = 0, size = items.size(); i < size; i++)
         {
-            const char letter = index_to_letter(i);
+            const char letter = index_to_letter(i % 52);
 
             items[i]->hotkeys.clear();
             items[i]->add_hotkey(letter);
@@ -485,7 +499,7 @@ static void _recap_spell_keys(vector<string> &keys)
         // first, strip " spell"
         const string key_name = keys[i].substr(0, keys[i].length() - 6);
         // then get the real name
-        keys[i] = make_stringf("<1089>%s 주문",
+        keys[i] = make_stringf("%s spell",
                                spell_title(spell_by_name(key_name)));
     }
 }
@@ -501,7 +515,7 @@ static void _recap_ability_keys(vector<string> &keys)
     {
         strip_suffix(key, "ability");
         // get the real name
-        key = make_stringf("<1090>%s 능력", ability_name(ability_by_name(key)));
+        key = make_stringf("%s ability", ability_name(ability_by_name(key)));
     }
 }
 
@@ -539,45 +553,6 @@ static void _recap_card_keys(vector<string> &keys)
 }
 
 /**
- * Make a list of all books that contain a given spell.
- *
- * @param spell_type spell      The spell in question.
- * @return                      A formatted list of books containing
- *                              the spell, e.g.:
- *    \n\nThis spell can be found in the following books: dreams, burglary.
- *    or
- *    \n\nThis spell is not found in any books.
- */
-static string _spell_sources(const spell_type spell)
-{
-    item_def item;
-    set_ident_flags(item, ISFLAG_IDENT_MASK);
-    vector<string> books;
-
-    item.base_type = OBJ_BOOKS;
-    for (int i = 0; i < NUM_FIXED_BOOKS; i++)
-        for (spell_type sp : spellbook_template(static_cast<book_type>(i)))
-            if (sp == spell)
-            {
-                item.sub_type = i;
-                books.push_back(item.name(DESC_PLAIN));
-            }
-
-    if (books.empty())
-        return "\n\nThis spell is not found in any books.";
-
-    string desc;
-
-    desc += "\n\nThis spell can be found in the following book";
-    if (books.size() > 1)
-        desc += "s";
-    desc += ":\n ";
-    desc += comma_separated_line(books.begin(), books.end(), "\n ", "\n ");
-
-    return desc;
-}
-
-/**
  * Make a basic, no-frills ?/<foo> menu entry.
  *
  * @param letter    The letter for the entry. (E.g. 'e' for the fifth entry.)
@@ -606,13 +581,13 @@ static MenuEntry* _monster_menu_gen(char letter, const string &str,
     // Create and store fake monsters, so the menu code will
     // have something valid to refer to.
     monster_type m_type = _mon_by_name(str);
-    const string name = _is_soh(str) ? "The Serpent of Hell" : str;
+    const string name = _is_soh(str) ? _soh_name(m_type) : str;
 
     monster_type base_type = MONS_NO_MONSTER;
     // HACK: Set an arbitrary humanoid monster as base type.
     if (mons_class_is_zombified(m_type))
         base_type = MONS_GOBLIN;
-    // FIXME: This doesn't generate proper draconian monsters.
+
     monster_info fake_mon(m_type, base_type);
     fake_mon.props["fake"] = true;
 
@@ -643,20 +618,39 @@ static MenuEntry* _monster_menu_gen(char letter, const string &str,
 }
 
 /**
+ * Generate a ?/I menu entry. (ref. _simple_menu_gen()).
+ */
+static MenuEntry* _item_menu_gen(char letter, const string &str, string &key)
+{
+    MenuEntry* me = _simple_menu_gen(letter, str, key);
+#ifdef USE_TILE
+    item_def item;
+    item_kind kind = item_kind_by_name(key);
+    get_item_by_name(&item, key.c_str(), kind.base_type);
+    item_colour(item);
+    tileidx_t idx = tileidx_item(get_item_info(item));
+    tileidx_t base_item = tileidx_known_base_item(idx);
+    if (base_item)
+        me->add_tile(tile_def(base_item, TEX_DEFAULT));
+    me->add_tile(tile_def(idx, TEX_DEFAULT));
+#endif
+    return me;
+}
+
+/**
  * Generate a ?/F menu entry. (ref. _simple_menu_gen()).
  */
 static MenuEntry* _feature_menu_gen(char letter, const string &str, string &key)
 {
-    const dungeon_feature_type feat = feat_by_desc(str);
-    MenuEntry* me = new FeatureMenuEntry(str, feat, letter);
+    MenuEntry* me = new MenuEntry(str, MEL_ITEM, 1, letter);
     me->data = &key;
 
 #ifdef USE_TILE
+    const dungeon_feature_type feat = feat_by_desc(str);
     if (feat)
     {
         const tileidx_t idx = tileidx_feature_base(feat);
-        me->add_tile(tile_def(pick_dngn_tile(idx, ui_random(INT_MAX)),
-                                             get_dngn_tex(idx)));
+        me->add_tile(tile_def(idx, get_dngn_tex(idx)));
     }
 #endif
 
@@ -688,6 +682,18 @@ static MenuEntry* _ability_menu_gen(char letter, const string &str, string &key)
 }
 
 /**
+ * Generate a ?/C menu entry. (ref. _simple_menu_gen()).
+ */
+static MenuEntry* _card_menu_gen(char letter, const string &str, string &key)
+{
+    MenuEntry* me = _simple_menu_gen(letter, str, key);
+#ifdef USE_TILE
+    me->add_tile(tile_def(TILE_MISC_CARD, TEX_DEFAULT));
+#endif
+    return me;
+}
+
+/**
  * Generate a ?/S menu entry. (ref. _simple_menu_gen()).
  */
 static MenuEntry* _spell_menu_gen(char letter, const string &str, string &key)
@@ -713,8 +719,25 @@ static MenuEntry* _skill_menu_gen(char letter, const string &str, string &key)
     MenuEntry* me = _simple_menu_gen(letter, str, key);
 
 #ifdef USE_TILE
-    const skill_type skill = str_to_skill(str);
+    const skill_type skill = str_to_skill_safe(str);
     me->add_tile(tile_def(tileidx_skill(skill, TRAINING_ENABLED), TEX_GUI));
+#endif
+
+    return me;
+}
+
+/**
+ * Generate a ?/B menu entry. (ref. _simple_menu_gen()).
+ */
+static MenuEntry* _branch_menu_gen(char letter, const string &str, string &key)
+{
+    MenuEntry* me = _simple_menu_gen(letter, str, key);
+
+    const branch_type branch = branch_by_shortname(str);
+    int hotkey = branches[branch].travel_shortcut;
+    me->hotkeys = {hotkey, tolower(hotkey)};
+#ifdef USE_TILE
+    me->add_tile(tile_def(tileidx_branch(branch), TEX_FEAT));
 #endif
 
     return me;
@@ -813,24 +836,16 @@ static string _mons_desc_key(monster_type type)
  */
 void LookupType::display_keys(vector<string> &key_list) const
 {
-    // For tiles builds use a tiles menu to display monsters.
-    const bool text_only =
-#ifdef USE_TILE_LOCAL
-    !(flags & lookup_type::support_tiles);
-#else
-    true;
-#endif
-
-    DescMenu desc_menu(MF_SINGLESELECT | MF_ANYPRINTABLE | MF_ALLOW_FORMATTING,
-                       toggleable_sort(), text_only);
+    DescMenu desc_menu(MF_SINGLESELECT | MF_ANYPRINTABLE | MF_ALLOW_FORMATTING
+            | MF_NO_SELECT_QTY | MF_USE_TWO_COLUMNS , toggleable_sort());
     desc_menu.set_tag("description");
 
     // XXX: ugh
     const bool doing_mons = type == "monster";
-    monster_info monster_list[52];
+    vector<monster_info> monster_list(key_list.size());
     for (unsigned int i = 0, size = key_list.size(); i < size; i++)
     {
-        const char letter = index_to_letter(i);
+        const char letter = index_to_letter(i % 52);
         string &key = key_list[i];
         // XXX: double ugh
         if (doing_mons)
@@ -844,34 +859,31 @@ void LookupType::display_keys(vector<string> &key_list) const
 
     desc_menu.sort();
 
-    while (true)
+    desc_menu.on_single_selection = [this, doing_mons](const MenuEntry& item)
     {
-        vector<MenuEntry*> sel = desc_menu.show();
-        redraw_screen();
-        if (sel.empty())
+        ASSERT(item.hotkeys.size() >= 1);
+
+        string key;
+
+        if (doing_mons)
         {
-            if (toggleable_sort() && desc_menu.getkey() == CONTROL('S'))
-                desc_menu.toggle_sorting();
-            else
-                return; // only exit from this function
+            monster_info* mon = (monster_info*) item.data;
+            key = _mons_desc_key(mon->type);
         }
         else
-        {
-            ASSERT(sel.size() == 1);
-            ASSERT(sel[0]->hotkeys.size() >= 1);
+            key = *((string*) item.data);
 
-            string key;
+        describe(key);
+        return true;
+    };
 
-            if (doing_mons)
-            {
-                monster_info* mon = (monster_info*) sel[0]->data;
-                key = _mons_desc_key(mon->type);
-            }
-            else
-                key = *((string*) sel[0]->data);
-
-            describe(key);
-        }
+    while (true)
+    {
+        desc_menu.show();
+        if (toggleable_sort() && desc_menu.getkey() == CONTROL('S'))
+            desc_menu.toggle_sorting();
+        else
+            break;
     }
 }
 
@@ -925,7 +937,8 @@ int LookupType::describe(const string &key, bool exact_match) const
  * @return              The keypress the user made to exit.
  */
 static int _describe_key(const string &key, const string &suffix,
-                         string footer, const string &extra_info)
+                         string footer, const string &extra_info,
+                         const tile_def *tile = nullptr)
 {
     describe_info inf;
     inf.quote = getQuoteString(key);
@@ -943,12 +956,7 @@ static int _describe_key(const string &key, const string &suffix,
     inf.footer = footer;
     inf.title  = title;
 
-#ifdef USE_TILE_WEB
-    tiles_crt_control show_as_menu(CRT_MENU, "description");
-#endif
-
-    print_description(inf);
-    return getchm();
+    return show_description(inf, tile);
 }
 
 /**
@@ -985,7 +993,14 @@ static int _describe_monster(const string &key, const string &suffix,
     if (mons_is_ghost_demon(mon_num) || mons_class_is_zombified(mon_num))
         return _describe_generic(key, suffix, footer);
 
-    monster_info mi(mon_num);
+    monster_type base_type = MONS_NO_MONSTER;
+    // Might be better to show all possible combinations rather than picking
+    // one at random as this does?
+    if (mons_is_draconian_job(mon_num))
+        base_type = random_draconian_monster_species();
+    else if (mons_is_demonspawn_job(mon_num))
+        base_type = random_demonspawn_monster_species();
+    monster_info mi(mon_num, base_type);
     // Avoid slime creature being described as "buggy"
     if (mi.type == MONS_SLIME_CREATURE)
         mi.slime_size = 1;
@@ -1007,12 +1022,27 @@ static int _describe_spell(const string &key, const string &suffix,
     const string spell_name = key.substr(0, key.size() - suffix.size());
     const spell_type spell = spell_by_name(spell_name, true);
     ASSERT(spell != SPELL_NO_SPELL);
-
-    const string spell_info = player_spell_desc(spell);
-    const string source_info = _spell_sources(spell);
-    return _describe_key(key, suffix, footer, spell_info + source_info);
+    describe_spell(spell, nullptr, nullptr, true);
+    return 0;
 }
 
+static int _describe_skill(const string &key, const string &suffix,
+                             string footer)
+{
+    const string skill_name = key.substr(0, key.size() - suffix.size());
+    const skill_type skill = skill_from_name(skill_name.c_str());
+    describe_skill(skill);
+    return 0;
+}
+
+static int _describe_ability(const string &key, const string &suffix,
+                             string footer)
+{
+    const string abil_name = key.substr(0, key.size() - suffix.size());
+    const ability_type abil = ability_by_name(abil_name.c_str());
+    describe_ability(abil);
+    return 0;
+}
 
 /**
  * Describe the card with the given name.
@@ -1028,7 +1058,12 @@ static int _describe_card(const string &key, const string &suffix,
     const string card_name = key.substr(0, key.size() - suffix.size());
     const card_type card = name_to_card(card_name);
     ASSERT(card != NUM_CARDS);
+#ifdef USE_TILE
+    tile_def tile = tile_def(TILE_MISC_CARD, TEX_DEFAULT);
+    return _describe_key(key, suffix, footer, which_decks(card) + "\n", &tile);
+#else
     return _describe_key(key, suffix, footer, which_decks(card) + "\n");
+#endif
 }
 
 /**
@@ -1045,28 +1080,16 @@ static int _describe_cloud(const string &key, const string &suffix,
     const string cloud_name = key.substr(0, key.size() - suffix.size());
     const cloud_type cloud = cloud_name_to_type(cloud_name);
     ASSERT(cloud != NUM_CLOUD_TYPES);
+#ifdef USE_TILE
+    cloud_info fake_cloud_info;
+    fake_cloud_info.type = cloud;
+    const tileidx_t idx = tileidx_cloud(fake_cloud_info) & ~TILE_FLAG_FLYING;
+    tile_def tile = tile_def(idx, TEX_DEFAULT);
+    return _describe_key(key, suffix, footer, extra_cloud_info(cloud), &tile);
+#else
     return _describe_key(key, suffix, footer, extra_cloud_info(cloud));
+#endif
 }
-
-
-/**
- * Describe the given spellbook.
- *
- * @param item      The item in question.
- * @return          0.
- *                  TODO: change to the last keypress (to allow exact match
- *                  support)
- */
-static int _describe_spellbook(const item_def &item)
-{
-    const string desc = get_item_description(item, true);
-    formatted_string fdesc;
-    fdesc.cprintf("<1091>%s", desc.c_str());
-
-    list_spellset(item_spellset(item), nullptr, &item, fdesc);
-    return 0; // XXX: this breaks exact match stuff
-}
-
 
 /**
  * Describe the item with the given name.
@@ -1080,23 +1103,19 @@ static int _describe_item(const string &key, const string &suffix,
                            string footer)
 {
     item_def item;
-    string stats;
-    if (get_item_by_name(&item, key.c_str(), OBJ_WEAPONS)
-        || get_item_by_name(&item, key.c_str(), OBJ_ARMOUR)
-        || get_item_by_name(&item, key.c_str(), OBJ_MISSILES)
-        || get_item_by_name(&item, key.c_str(), OBJ_MISCELLANY))
-    {
-        // don't request description since _describe_key handles that
-        stats = get_item_description(item, true, false, true);
-    }
-    // spellbooks are interactive & so require special handling
-    else if (get_item_by_name(&item, key.c_str(), OBJ_BOOKS))
-    {
-        item_colour(item);
-        return _describe_spellbook(item);
-    }
+    if (!get_item_by_exact_name(item, key.c_str()))
+        die("Unable to get item %s by name", key.c_str());
+    describe_item(item);
+    return 0;
+}
 
-    return _describe_key(key, suffix, footer, stats);
+static int _describe_feature(const string &key, const string &suffix,
+                             string footer)
+{
+    const string feat_name = key.substr(0, key.size() - suffix.size());
+    const dungeon_feature_type feat = feat_by_desc(feat_name);
+    describe_feature_type(feat);
+    return 0;
 }
 
 /**
@@ -1110,11 +1129,7 @@ static int _describe_god(const string &key, const string &/*suffix*/,
 {
     const god_type which_god = str_to_god(key);
     ASSERT(which_god != GOD_NO_GOD);
-
-#ifdef USE_TILE_WEB
-    tiles_crt_control show_as_menu(CRT_MENU, "describe_god");
-#endif
-    describe_god(which_god, true);
+    describe_god(which_god);
 
     return 0; // no exact matches for gods, so output doesn't matter
 }
@@ -1126,8 +1141,8 @@ static string _branch_entry_runes(branch_type br)
 
     if (num_runes > 0)
     {
-        desc = make_stringf("<1092>\n\n이 %s는(은) 최소 %d개의 조트의 %s 룬을 "
-                            "<1093>들고 있을 때만 입장 가능합니다.",
+        desc = make_stringf("\n\nThis %s can only be entered while carrying "
+                            "at least %d rune%s of Zot.",
                             br == BRANCH_ZIGGURAT ? "portal" : "branch",
                             num_runes, num_runes > 1 ? "s" : "");
     }
@@ -1143,7 +1158,7 @@ static string _branch_depth(branch_type br)
     // Abyss depth is explained in the description.
     if (depth > 1 && br != BRANCH_ABYSS)
     {
-        desc = make_stringf("<1094>\n\n이 %s 는(은) 지하 %d 층이다.",
+        desc = make_stringf("\n\nThis %s is %d levels deep.",
                             br == BRANCH_ZIGGURAT ? "portal"
                                                   : "branch",
                             depth);
@@ -1191,7 +1206,7 @@ static string _branch_subbranches(branch_type br)
     // Lair's random branches are explained in the description.
     if (!subbranch_names.empty() && br != BRANCH_LAIR)
     {
-        desc += make_stringf("<1095>\n\nThis branch contains the entrance%s to %s.",
+        desc += make_stringf("\n\nThis branch contains the entrance%s to %s.",
                              subbranch_names.size() > 1 ? "s" : "",
                              comma_separated_line(begin(subbranch_names),
                                                   end(subbranch_names)).c_str());
@@ -1227,55 +1242,49 @@ static int _describe_branch(const string &key, const string &suffix,
             + "\n\n"
             + branch_rune_desc(branch, false);
 
+#ifdef USE_TILE
+    tile_def tile = tile_def(tileidx_branch(branch), TEX_FEAT);
+    return _describe_key(key, suffix, footer, info, &tile);
+#else
     return _describe_key(key, suffix, footer, info);
+#endif
 }
 
 /// All types of ?/ queries the player can enter.
 static const vector<LookupType> lookup_types = {
     LookupType('M', "monster", _recap_mon_keys, _monster_filter,
                _get_monster_keys, nullptr, nullptr,
-               _describe_monster,
-               lookup_type::support_tiles | lookup_type::toggleable_sort),
+               _describe_monster, lookup_type::toggleable_sort),
     LookupType('S', "spell", _recap_spell_keys, _spell_filter,
                nullptr, nullptr, _spell_menu_gen,
-               _describe_spell,
-               lookup_type::db_suffix | lookup_type::support_tiles),
+               _describe_spell, lookup_type::db_suffix),
     LookupType('K', "skill", nullptr, nullptr,
                nullptr, _get_skill_keys, _skill_menu_gen,
-               _describe_generic,
-               lookup_type::support_tiles),
+               _describe_skill, lookup_type::none),
     LookupType('A', "ability", _recap_ability_keys, _ability_filter,
                nullptr, nullptr, _ability_menu_gen,
-               _describe_generic,
-               lookup_type::db_suffix | lookup_type::support_tiles),
+               _describe_ability, lookup_type::db_suffix),
     LookupType('C', "card", _recap_card_keys, _card_filter,
-               nullptr, nullptr, _simple_menu_gen,
-               _describe_card,
-               lookup_type::db_suffix),
+               nullptr, nullptr, _card_menu_gen,
+               _describe_card, lookup_type::db_suffix),
     LookupType('I', "item", nullptr, _item_filter,
-               item_name_list_for_glyph, nullptr, _simple_menu_gen,
-               _describe_item,
-               lookup_type::none),
+               item_name_list_for_glyph, nullptr, _item_menu_gen,
+               _describe_item, lookup_type::none),
     LookupType('F', "feature", _recap_feat_keys, _feature_filter,
                nullptr, nullptr, _feature_menu_gen,
-               _describe_generic,
-               lookup_type::support_tiles),
+               _describe_feature, lookup_type::none),
     LookupType('G', "god", nullptr, nullptr,
                nullptr, _get_god_keys, _god_menu_gen,
-               _describe_god,
-               lookup_type::support_tiles),
+               _describe_god, lookup_type::none),
     LookupType('B', "branch", nullptr, nullptr,
-               nullptr, _get_branch_keys, _simple_menu_gen,
-               _describe_branch,
-               lookup_type::disable_sort),
+               nullptr, _get_branch_keys, _branch_menu_gen,
+               _describe_branch, lookup_type::disable_sort),
     LookupType('L', "cloud", nullptr, nullptr,
                nullptr, _get_cloud_keys, _cloud_menu_gen,
-               _describe_cloud,
-               lookup_type::db_suffix | lookup_type::support_tiles),
+               _describe_cloud, lookup_type::db_suffix),
     LookupType('T', "status", nullptr, _status_filter,
                nullptr, nullptr, _simple_menu_gen,
-               _describe_generic,
-               lookup_type::db_suffix),
+               _describe_generic, lookup_type::db_suffix),
 };
 
 /**
@@ -1303,16 +1312,16 @@ static string _prompt_for_regex(const LookupType &lookup_type, string &err)
 {
     const string type = lowercase_string(lookup_type.type);
     const string extra = lookup_type.supports_glyph_lookup() ?
-        make_stringf("<1096> Enter a single letter to list %s displayed by that"
+        make_stringf(" Enter a single letter to list %s displayed by that"
                      " symbol.", pluralise(type).c_str()) :
         "";
-    mprf(MSGCH_PROMPT,
-         "<1097>%s을(를) 모사; 이름의 일부분이나 정규식도 가능합니다..%s",
+    const string prompt = make_stringf(
+         "Describe a %s; partial names and regexps are fine.%s\n"
+         "Describe what? ",
          type.c_str(), extra.c_str());
 
-    mprf(MSGCH_PROMPT, "무엇을 묘사합니까? ");
     char buf[80];
-    if (cancellable_get_line(buf, sizeof(buf)) || buf[0] == '\0')
+    if (msgwin_get_line(prompt, buf, sizeof(buf)) || buf[0] == '\0')
     {
         err = "Okay, then.";
         return "";
@@ -1362,20 +1371,60 @@ static string _keylist_invalid_reason(const vector<string> &key_list,
         return "No matching " + plur_type + ".";
     }
 
-    if (key_list.size() > 52)
-    {
-        if (by_symbol)
-        {
-            return "Too many " + plur_type + " with symbol '" + regex +
-                    "' to display.";
-        }
-
-        return make_stringf("<1098>%s에 대한 검색 결과가 너무 많습니다. (%d)",
-                            plur_type.c_str(), (int) key_list.size());
-    }
-
     // we're good!
     return "";
+}
+
+static int _lookup_prompt()
+{
+    // TODO: show this + the regex prompt in the same menu?
+#ifdef TOUCH_UI
+    bool use_popup = true;
+#else
+    bool use_popup = !crawl_state.need_save || ui::has_layout();
+#endif
+
+    int ch = -1;
+    const string lookup_type_prompts =
+        comma_separated_fn(lookup_types.begin(), lookup_types.end(),
+                           mem_fn(&LookupType::prompt_string), " or ");
+    if (use_popup)
+    {
+        string prompt = make_stringf("Describe a %s? ",
+                                                lookup_type_prompts.c_str());
+        linebreak_string(prompt, 72);
+
+#ifdef USE_TILE_WEB
+        tiles_crt_popup show_as_popup;
+        tiles.set_ui_state(UI_CRT);
+#endif
+        auto prompt_ui =
+                make_shared<ui::Text>(formatted_string::parse_string(prompt));
+        bool done = false;
+
+        prompt_ui->on(ui::Widget::slots.event, [&](wm_event ev) {
+            if (ev.type == WME_KEYDOWN)
+            {
+                ch = ev.key.keysym.sym;
+                done = true;
+            }
+            return done;
+        });
+
+        mouse_control mc(MOUSE_MODE_MORE);
+        auto popup = make_shared<ui::Popup>(prompt_ui);
+        ui::run_layout(move(popup), done);
+    }
+    else
+    {
+        mprf(MSGCH_PROMPT, "Describe a %s? ", lookup_type_prompts.c_str());
+
+        {
+            cursor_control con(true);
+            ch = getchm();
+        }
+    }
+    return toupper(ch);
 }
 
 /**
@@ -1387,18 +1436,7 @@ static string _keylist_invalid_reason(const vector<string> &key_list,
  */
 static bool _find_description(string &response)
 {
-
-    const string lookup_type_prompts =
-        comma_separated_fn(lookup_types.begin(), lookup_types.end(),
-                           mem_fn(&LookupType::prompt_string), " or ");
-    mprf(MSGCH_PROMPT, "<1099>%s을(를) 묘사합니까? ", lookup_type_prompts.c_str());
-
-    int ch;
-    {
-        cursor_control con(true);
-        ch = toupper(getchm());
-    }
-
+    int ch = _lookup_prompt();
     const LookupType * const *lookup_type_ptr
         = map_find(_lookup_types_by_symbol, ch);
     if (!lookup_type_ptr)
@@ -1463,7 +1501,7 @@ void keyhelp_query_descriptions()
         redraw_screen();
 
         if (!response.empty())
-            mprf(MSGCH_PROMPT, "<1100>%s", response.c_str());
+            mprf(MSGCH_PROMPT, "%s", response.c_str());
         response = "";
 
         if (!_find_description(response))
@@ -1473,5 +1511,5 @@ void keyhelp_query_descriptions()
     }
 
     viewwindow();
-    mpr("좋아, 그럼.");
+    mpr("Okay, then.");
 }

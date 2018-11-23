@@ -1,8 +1,6 @@
-/**
- * @file
- * @brief Building routines (library "dgn").
-**/
-
+/***
+ * @module dgn
+ */
 #include "AppHdr.h"
 
 #include "l-libs.h"
@@ -32,7 +30,7 @@ static int _table_int(lua_State *ls, int idx, const char *name, int defval)
     bool nil = lua_isnil(ls, idx);
     bool valid = lua_isnumber(ls, idx);
     if (!nil && !valid)
-        luaL_error(ls, "<1056>'%s' in table, but not an int.", name);
+        luaL_error(ls, "'%s' in table, but not an int.", name);
     int ret = (!nil && valid ? luaL_checkint(ls, idx) : defval);
     lua_pop(ls, 1);
     return ret;
@@ -49,7 +47,7 @@ static char _table_char(lua_State *ls, int idx, const char *name, char defval)
     bool nil = lua_isnil(ls, idx);
     bool valid = lua_isstring(ls, idx);
     if (!nil && !valid)
-        luaL_error(ls, "<1057>'%s' in table, but not a string.", name);
+        luaL_error(ls, "'%s' in table, but not a string.", name);
 
     char ret = defval;
     if (!nil && valid)
@@ -58,7 +56,7 @@ static char _table_char(lua_State *ls, int idx, const char *name, char defval)
         if (str[0] && !str[1])
             ret = str[0];
         else
-            luaL_error(ls, "<1058>'%s' has more than one character.", name);
+            luaL_error(ls, "'%s' has more than one character.", name);
     }
     lua_pop(ls, 1);
     return ret;
@@ -75,7 +73,7 @@ static const char* _table_str(lua_State *ls, int idx, const char *name, const ch
     bool nil = lua_isnil(ls, idx);
     bool valid = lua_isstring(ls, idx);
     if (!nil && !valid)
-        luaL_error(ls, "<1059>'%s' in table, but not a string.", name);
+        luaL_error(ls, "'%s' in table, but not a string.", name);
     const char *ret = (!nil && valid ? lua_tostring(ls, idx) : defval);
     lua_pop(ls, 1);
     return ret;
@@ -92,7 +90,7 @@ static bool _table_bool(lua_State *ls, int idx, const char *name, bool defval)
     bool nil = lua_isnil(ls, idx);
     bool valid = lua_isboolean(ls, idx);
     if (!nil && !valid)
-        luaL_error(ls, "<1060>'%s' in table, but not a bool.", name);
+        luaL_error(ls, "'%s' in table, but not a bool.", name);
     bool ret = (!nil && valid ? lua_toboolean(ls, idx) : defval);
     lua_pop(ls, 1);
     return ret;
@@ -351,7 +349,7 @@ struct join_the_dots_path
     int avoid_vault_count;
 };
 
-/**
+/*
  * Calculates a possible path joining the provided coordinates.
  *
  * @param from              The start of the path to be calculated.
@@ -466,7 +464,7 @@ static join_the_dots_path _calculate_join_the_dots_path (const coord_def& from,
 }
 
 
-/**
+/*
  * Calculates a possible path joining the provided coordinates.
  *
  * @param from              The start of the path to be calculated.
@@ -1812,7 +1810,7 @@ LUAFN(dgn_replace_random)
     if (!count)
     {
         if (required)
-            luaL_error(ls, "<1061>%s", "No elements to replace");
+            luaL_error(ls, "%s", "No elements to replace");
         return 0;
     }
 
@@ -1857,7 +1855,7 @@ LUAFN(dgn_replace_closest)
     if (!count)
     {
         if (required)
-            luaL_error(ls, "<1062>%s", "No elements to replace");
+            luaL_error(ls, "%s", "No elements to replace");
         return 0;
     }
 

@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "cio.h"
+#include "command.h"
 #include "files.h"
 #include "initfile.h"
 #include "libutil.h"
@@ -103,8 +104,6 @@ typedef map<int, int> cmd_to_key_map;
 
 static key_to_cmd_map _keys_to_cmds[KMC_CONTEXT_COUNT];
 static cmd_to_key_map _cmds_to_keys[KMC_CONTEXT_COUNT];
-
-static KeymapContext _context_for_command(command_type cmd);
 
 static inline int userfunc_index(int key)
 {
@@ -424,6 +423,19 @@ static void _macro_inject_sent_keys()
 }
 
 /*
+ * Safely add a command to the end of the sendkeys keybuffer.
+ */
+void macro_sendkeys_end_add_cmd(command_type cmd)
+{
+    ASSERT_RANGE(cmd, CMD_NO_CMD + 1, CMD_MIN_SYNTHETIC);
+
+    // There should be plenty of room between the synthetic keys
+    // (KEY_MACRO_MORE_PROTECT == -10) and USERFUNCBASE (-10000) for
+    // command_type to fit (currently 1000 through 2069).
+    macro_sendkeys_end_add_expanded(-((int) cmd));
+}
+
+/*
  * Adds keypresses from a sequence into the internal keybuffer. Ignores
  * macros.
  */
@@ -641,6 +653,15 @@ int macro_buf_get()
     return key;
 }
 
+void process_command_on_record(command_type cmd)
+{
+    const int key = command_to_key(cmd);
+    if (key != '\0')
+        for (key_recorder *recorder : recorders)
+            recorder->add_key(key);
+    process_command(cmd);
+}
+
 static void write_map(FILE *f, const macromap &mp, const char *key)
 {
     for (const auto &entry : mp)
@@ -649,7 +670,7 @@ static void write_map(FILE *f, const macromap &mp, const char *key)
         // macro struct for all used keyboard commands.
         if (entry.second.size())
         {
-            fprintf(f, "<1105>%s%s\nA:%s\n\n", OUTS(key),
+            fprintf(f, "%s%s\nA:%s\n\n", OUTS(key),
                 OUTS(vtostr(entry.first)), OUTS(vtostr(entry.second)));
         }
     }
@@ -665,11 +686,11 @@ void macro_save()
     f = fopen_u(macrofile.c_str(), "w");
     if (!f)
     {
-        mprf(MSGCH_ERROR, "<1106>Couldn't open %s for writing!", macrofile.c_str());
+        mprf(MSGCH_ERROR, "Couldn't open %s for writing!", macrofile.c_str());
         return;
     }
 
-    fprintf(f, "<1107># %s %s macro file\n"
+    fprintf(f, "# %s %s macro file\n"
                "# WARNING: This file is entirely auto-generated.\n"
                "\n"
                "# Key Mappings:\n",
@@ -703,7 +724,7 @@ static keyseq _getch_mul(int (*rgetch)() = nullptr)
     // get new keys from the user.
     if (crawl_state.is_replaying_keys())
     {
-        mprf(MSGCH_ERROR, "(키 리플레이 : 키가 부족함)");
+        mprf(MSGCH_ERROR, "(Key replay ran out of keys)");
         crawl_state.cancel_cmd_repeat();
         crawl_state.cancel_cmd_again();
     }
@@ -711,12 +732,15 @@ static keyseq _getch_mul(int (*rgetch)() = nullptr)
     if (!rgetch)
         rgetch = m_getch;
 
-    keys.push_back(a = rgetch());
-
     // The a == 0 test is legacy code that I don't dare to remove. I
     // have a vague recollection of it being a kludge for conio support.
-    while (kbhit() || a == 0)
-        keys.push_back(a = rgetch());
+    do
+    {
+        a = rgetch();
+        if (a != CK_NO_KEY)
+            keys.push_back(a);
+    }
+    while (keys.size() == 0 || ((kbhit() || a == 0) && a != CK_REDRAW));
 
     return keys;
 }
@@ -740,12 +764,16 @@ int getchm(KeymapContext mc, int (*rgetch)())
 
     // Read some keys...
     keyseq keys = _getch_mul(rgetch);
+    macro_buf_add_with_keymap(keys, mc);
+    return macro_buf_get();
+}
+
+void macro_buf_add_with_keymap(keyseq keys, KeymapContext mc)
+{
     if (mc == KMC_NONE)
         macro_buf_add(keys, false, false);
     else
         macro_buf_add_long(keys, Keymaps[mc]);
-
-    return macro_buf_get();
 }
 
 /**
@@ -813,6 +841,13 @@ void flush_input_buffer(int reason)
         || reason == FLUSH_REPLAY_SETUP_FAILURE
         || reason == FLUSH_REPEAT_SETUP_DONE)
     {
+        if (crawl_state.nonempty_buffer_flush_errors)
+        {
+            if (you.wizard) // crash -- intended for tests
+                ASSERT(Buffer.empty());
+            else if (!Buffer.empty())
+                mprf(MSGCH_ERROR, "Flushing non-empty key buffer");
+        }
         while (!Buffer.empty())
         {
             const int key = Buffer.front();
@@ -827,7 +862,7 @@ void flush_input_buffer(int reason)
 
 static string _macro_prompt_string(const string &macro_type)
 {
-    return make_stringf("<1108>Input %s action: ", macro_type.c_str());
+    return make_stringf("Input %s action: ", macro_type.c_str());
 }
 
 static void _macro_prompt(const string &macro_type)
@@ -845,7 +880,7 @@ static void _input_action_raw(const string &macro_type, keyseq* action)
     while (!done)
     {
         cgotoxy(x, y);
-        cprintf("<1109>%s", vtostr(*action).c_str());
+        cprintf("%s", vtostr(*action).c_str());
 
         int input = m_getch();
 
@@ -880,7 +915,7 @@ static void _input_action_text(const string &macro_type, keyseq* action)
 
 static string _macro_type_name(bool keymap, KeymapContext keymc)
 {
-    return make_stringf("<1110>%s%s",
+    return make_stringf("%s%s",
                         keymap ? (keymc == KMC_DEFAULT    ? "default " :
                                   keymc == KMC_LEVELMAP   ? "level-map " :
                                   keymc == KMC_TARGETING  ? "targeting " :
@@ -899,8 +934,8 @@ void macro_add_query()
 
     clear_messages();
     mprf(MSGCH_PROMPT, "(m)acro, (M)acro raw, keymap "
-                       "[(k) 디폴트, (x) 층 지도, (t) 조준, "
-                       "(c)결정, (e)메뉴], (s)저장? ");
+                       "[(k) default, (x) level-map, (t)argeting, "
+                       "(c)onfirm, m(e)nu], (s)ave? ");
     input = m_getch();
     int low = toalower(input);
 
@@ -936,20 +971,20 @@ void macro_add_query()
     }
     else if (input == 's')
     {
-        mpr("매크로를 저장한다.");
+        mpr("Saving macros.");
         macro_save();
         return;
     }
     else
     {
-        mpr("중지.");
+        mpr("Aborting.");
         return;
     }
 
     // reference to the appropriate mapping
     macromap &mapref = (keymap ? Keymaps[keymc] : Macros);
     const string macro_type = _macro_type_name(keymap, keymc);
-    const string trigger_prompt = make_stringf("<1111>Input %s trigger key: ",
+    const string trigger_prompt = make_stringf("Input %s trigger key: ",
                                                macro_type.c_str());
     msgwin_prompt(trigger_prompt);
 
@@ -963,7 +998,7 @@ void macro_add_query()
     {
         string action = vtostr(mapref[key]);
         action = replace_all(action, "<", "<<");
-        mprf(MSGCH_WARN, "<1112>Current Action: %s", action.c_str());
+        mprf(MSGCH_WARN, "Current Action: %s", action.c_str());
         mprf(MSGCH_PROMPT, "Do you wish to (r)edefine, (c)lear, or (a)bort? ");
 
         input = m_getch();
@@ -976,7 +1011,7 @@ void macro_add_query()
         }
         else if (input == 'c')
         {
-            mprf("<1113>Cleared %s '%s' => '%s'.",
+            mprf("Cleared %s '%s' => '%s'.",
                  macro_type.c_str(),
                  vtostr(key).c_str(),
                  vtostr(mapref[key]).c_str());
@@ -997,7 +1032,7 @@ void macro_add_query()
         const bool deleted_macro = macro_del(mapref, key);
         if (deleted_macro)
         {
-            mprf("<1114>Deleted %s for '%s'.",
+            mprf("Deleted %s for '%s'.",
                  macro_type.c_str(),
                  vtostr(key).c_str());
         }
@@ -1007,7 +1042,7 @@ void macro_add_query()
     else
     {
         macro_add(mapref, key, action);
-        mprf("<1115>Created %s '%s' => '%s'.",
+        mprf("Created %s '%s' => '%s'.",
              macro_type.c_str(),
              vtostr(key).c_str(), vtostr(action).c_str());
     }
@@ -1073,7 +1108,7 @@ static void _read_macros_from(const char* filename)
  * bit after "macros +=")
  *
  * @return The string of any errors which occurred, or "" if no error.
-<1116> * %s is the field argument.
+ * %s is the field argument.
  */
 
 string read_rc_file_macro(const string& field)
@@ -1081,7 +1116,7 @@ string read_rc_file_macro(const string& field)
     const int first_space = field.find(' ');
 
     if (first_space < 0)
-        return "<1117>Cannot parse marcos += %s , there is only one argument";
+        return "Cannot parse marcos += %s , there is only one argument";
 
     // Start by deciding what context the macro/keymap is in
     const string context = field.substr(0, first_space);
@@ -1109,7 +1144,7 @@ string read_rc_file_macro(const string& field)
         keymap = false;
     else
         return "'" + context
-                   + "<1118>' is not a valid macro or keymap context (macros += %s)";
+                   + "' is not a valid macro or keymap context (macros += %s)";
 
     // Now grab the key and action to be performed
     const string key_and_action = field.substr((first_space + 1));
@@ -1117,7 +1152,7 @@ string read_rc_file_macro(const string& field)
     const int second_space = key_and_action.find(' ');
 
     if (second_space < 0)
-        return "<1119>Cannot parse marcos += %s , there are only two arguments";
+        return "Cannot parse marcos += %s , there are only two arguments";
 
     const string macro_key_string = key_and_action.substr(0, second_space);
     const string action_string = key_and_action.substr((second_space + 1));
@@ -1135,6 +1170,24 @@ string read_rc_file_macro(const string& field)
     macro_save();
 
     return "";
+}
+
+// useful for debugging
+string keyseq_to_str(const keyseq &seq)
+{
+    string s = "";
+    for (auto k : seq)
+    {
+        if (k == '\n' || k == '\r')
+            s += "newline";
+        else if (k == '\t')
+            s += "tab";
+        else
+            s += (char) k;
+        s += ", ";
+    }
+    return s.size() == 0 ? s : s.substr(0, s.size() - 2);
+
 }
 
 void macro_init()
@@ -1253,7 +1306,7 @@ void init_keybindings()
         default_binding &data = _default_binding_list[i];
         ASSERT(VALID_BIND_COMMAND(data.cmd));
 
-        KeymapContext context = _context_for_command(data.cmd);
+        KeymapContext context = context_for_command(data.cmd);
 
         ASSERT(context < KMC_CONTEXT_COUNT);
 
@@ -1285,8 +1338,8 @@ command_type key_to_command(int key, KeymapContext context)
 {
     if (-key > CMD_NO_CMD && -key < CMD_MIN_SYNTHETIC)
     {
-        command_type  cmd         = (command_type) -key;
-        KeymapContext cmd_context = _context_for_command(cmd);
+        const command_type  cmd         = (command_type) -key;
+        const KeymapContext cmd_context = context_for_command(cmd);
 
         if (cmd == CMD_NO_CMD)
             return CMD_NO_CMD;
@@ -1294,10 +1347,10 @@ command_type key_to_command(int key, KeymapContext context)
         if (cmd_context != context)
         {
             mprf(MSGCH_ERROR,
-                 "<1120>key_to_command(): command '%s' (%d:%d) wrong for desired "
-                 "context",
+                 "key_to_command(): command '%s' (%d:%d) wrong for desired "
+                 "context %d",
                  command_to_name(cmd).c_str(), -key - CMD_NO_CMD,
-                 CMD_MAX_CMD + key);
+                 CMD_MAX_CMD + key, (int) context);
             if (is_processing_macro())
                 flush_input_buffer(FLUSH_ABORT_MACRO);
             if (crawl_state.is_replaying_keys()
@@ -1306,24 +1359,22 @@ command_type key_to_command(int key, KeymapContext context)
                 flush_input_buffer(FLUSH_KEY_REPLAY_CANCEL);
             }
             flush_input_buffer(FLUSH_BEFORE_COMMAND);
-
             return CMD_NO_CMD;
         }
-
         return cmd;
     }
 
     const auto cmd = static_cast<command_type>(lookup(_keys_to_cmds[context],
                                                       key, CMD_NO_CMD));
 
-    ASSERT(cmd == CMD_NO_CMD || _context_for_command(cmd) == context);
+    ASSERT(cmd == CMD_NO_CMD || context_for_command(cmd) == context);
 
     return cmd;
 }
 
 int command_to_key(command_type cmd)
 {
-    KeymapContext context = _context_for_command(cmd);
+    KeymapContext context = context_for_command(cmd);
 
     if (context == KMC_NONE)
         return '\0';
@@ -1331,7 +1382,7 @@ int command_to_key(command_type cmd)
     return lookup(_cmds_to_keys[context], cmd, '\0');
 }
 
-static KeymapContext _context_for_command(command_type cmd)
+KeymapContext context_for_command(command_type cmd)
 {
     if (cmd > CMD_NO_CMD && cmd <= CMD_MAX_NORMAL)
         return KMC_DEFAULT;
@@ -1352,7 +1403,7 @@ static KeymapContext _context_for_command(command_type cmd)
 
 void bind_command_to_key(command_type cmd, int key)
 {
-    KeymapContext context = _context_for_command(cmd);
+    KeymapContext context = context_for_command(cmd);
     string   command_name = command_to_name(cmd);
 
     if (context == KMC_NONE || command_name == "CMD_NO_CMD"
@@ -1360,25 +1411,25 @@ void bind_command_to_key(command_type cmd, int key)
     {
         if (command_name == "CMD_NO_CMD")
         {
-            mprf(MSGCH_ERROR, "#%d는 하나의 키로 묶을 수 없다.",
+            mprf(MSGCH_ERROR, "Cannot bind command #%d to a key.",
                  (int) cmd);
             return;
         }
 
-        mprf(MSGCH_ERROR, "<1121>'%s'는 하나의 키로 묶을 수 없다.",
+        mprf(MSGCH_ERROR, "Cannot bind command '%s' to a key.",
              command_name.c_str());
         return;
     }
 
     if (is_userfunction(key))
     {
-        mprf(MSGCH_ERROR, "유저 기능 키는 하나의 명령키로 묶을 수 없다.");
+        mprf(MSGCH_ERROR, "Cannot bind user function keys to a command.");
         return;
     }
 
     if (is_synthetic_key(key))
     {
-        mprf(MSGCH_ERROR, "조합 키는 하나의 명령키로 묶을 수 없다.");
+        mprf(MSGCH_ERROR, "Cannot bind synthetic keys to a command.");
         return;
     }
 
@@ -1462,7 +1513,7 @@ string command_to_string(command_type cmd, bool tutorial)
     return result;
 }
 
-void insert_commands(string &desc, vector<command_type> cmds, bool formatted)
+void insert_commands(string &desc, const vector<command_type> &cmds, bool formatted)
 {
     desc = untag_tiles_console(desc);
     for (command_type cmd : cmds)
@@ -1481,24 +1532,3 @@ void insert_commands(string &desc, vector<command_type> cmds, bool formatted)
     }
     desc = replace_all(desc, "percent", "%");
 }
-
-#if 0
-// Currently unused, might be useful somewhere.
-static void _list_all_commands(string &commands)
-{
-    for (int i = CMD_NO_CMD; i < CMD_MAX_CMD; i++)
-    {
-        const command_type cmd = (command_type) i;
-
-        const string command_name = command_to_name(cmd);
-        if (command_name == "CMD_NO_CMD")
-            continue;
-
-        if (_context_for_command(cmd) != KMC_DEFAULT)
-            continue;
-
-        commands += command_name + ": " + command_to_string(cmd) + "\n";
-    }
-    commands += "\n";
-}
-#endif

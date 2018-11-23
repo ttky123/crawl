@@ -129,7 +129,7 @@ bool monster::level_up()
         // Not less than 3 hp, not more than 25.
         hpboost = min(max(hpboost, 3), 25);
 
-        dprf("<1541>%s: HD: %d, maxhp: %d, boost: %d",
+        dprf("%s: HD: %d, maxhp: %d, boost: %d",
              name(DESC_PLAIN).c_str(), get_experience_level(),
              max_hit_points, hpboost);
 
@@ -185,9 +185,9 @@ bool monster::gain_exp(int exp, int max_levels_to_gain)
     if (levels_gained)
     {
         if (mons_intel(*this) >= I_HUMAN)
-            simple_monster_message(mcopy, "은(는) 경험이 더욱 쌓인 것처럼 보였다.");
+            simple_monster_message(mcopy, " looks more experienced.");
         else
-            simple_monster_message(mcopy, "은(는) 강해진 것처럼 보였다.");
+            simple_monster_message(mcopy, " looks stronger.");
     }
 
     if (get_experience_level() < MAX_MONS_HD
